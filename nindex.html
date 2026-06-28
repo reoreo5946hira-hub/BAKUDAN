@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>スタッフ操作</title>
+
+  <!--
+  ╔═══════════════════════════════════════════════════════════╗
+  ║  セットアップ手順                                          ║
+  ║                                                           ║
+  ║  1. console.firebase.google.com でプロジェクトを作成       ║
+  ║  2. Realtime Database を追加（テストモードで作成でOK）      ║
+  ║  3. プロジェクトの設定 → firebaseConfig をコピー            ║
+  ║  4. 下の firebaseConfig の中身を貼り付ける                 ║
+  ║  5. bomb.html にも同じ firebaseConfig を貼り付ける          ║
+  ║                                                           ║
+  ║  GitHub Pages デプロイ手順                                 ║
+  ║  1. GitHub で新しいリポジトリを作成                         ║
+  ║  2. index.html と bomb.html をアップロード                  ║
+  ║  3. Settings → Pages → Deploy from branch (main)           ║
+  ║  4. スタッフ用: yoursite.github.io/repo/index.html         ║
+  ║     爆弾iPad: yoursite.github.io/repo/bomb.html            ║
+  ╚═══════════════════════════════════════════════════════════╝
+  -->
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+
+  <style>
+    /* ─── Tokens ─── */
+    :root {
+      --bg:     #050A05;
+      --card:   #090F09;
+      --bd:     #1C341C;
+      --green:  #00CC44;
+      --dim:    #3A5A3A;
+      --mute:   #1A2A1A;
+      --accent: #00FF66;
+      --warn:   #FFAA00;
+      --danger: #FF3333;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box; margin: 0; padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--green);
+      font-family: 'Share Tech Mono', 'Courier New', monospace;
+      min-height: 100vh;
+      display: flex; flex-direction: column; align-items: center;
+      padding: 28px 16px 52px;
+    }
+
+    /* ─── Header ─── */
+    .hdr {
+      width: 100%; max-width: 400px;
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 24px;
+    }
+    .hdr-line { flex: 1; height: 1px; background: var(--bd); }
+    .hdr-txt  { font-size: 0.62rem; color: var(--dim); letter-spacing: 6px; white-space: nowrap; }
+
+    /* ─── Card ─── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--bd);
+      border-radius: 10px; padding: 18px;
+      width: 100%; max-width: 400px;
+      margin-bottom: 12px;
+    }
+    .card-lbl {
+      font-size: 0.58rem; color: var(--dim);
+      letter-spacing: 5px; margin-bottom: 14px;
+    }
+
+    /* ─── Player grid ─── */
+    .pgrid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    .pbtn {
+      background: transparent;
+      border: 1px solid var(--mute);
+      color: var(--dim);
+      font-family: inherit;
+      padding: 13px 0 10px;
+      border-radius: 7px;
+      cursor: pointer; touch-action: manipulation;
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
+      transition: all 0.14s;
+    }
+    .pbtn .pc { font-size: 1rem; line-height: 1; }
+    .pbtn .pt { font-size: 0.6rem; color: var(--mute); transition: color 0.14s; }
+    .pbtn.sel {
+      background: rgba(0,204,68,0.05);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .pbtn.sel .pt { color: rgba(0,204,68,0.4); }
+    .pbtn:not(.sel):active { background: rgba(255,255,255,0.02); }
+
+    /* ─── Start button ─── */
+    #start-btn {
+      width: 100%; max-width: 400px; padding: 17px;
+      font-family: inherit; font-size: 1rem; letter-spacing: 8px;
+      background: rgba(0,204,68,0.05);
+      border: 1px solid var(--green);
+      color: var(--green);
+      border-radius: 10px;
+      cursor: pointer; touch-action: manipulation;
+      transition: all 0.14s;
+      margin-bottom: 12px;
+    }
+    #start-btn:disabled {
+      opacity: 0.16; cursor: default;
+      border-color: var(--mute); color: var(--mute);
+    }
+    #start-btn:not(:disabled):active {
+      background: rgba(0,204,68,0.12);
+      transform: scale(0.98);
+    }
+
+    /* ─── Status card ─── */
+    #status-card { display: none; }
+    #status-card.show { display: block; }
+
+    .live-timer {
+      font-size: 3.2rem; letter-spacing: 5px; text-align: center;
+      padding: 8px 0 4px;
+      color: var(--warn);
+      transition: color 0.4s;
+    }
+    .live-timer.red   { color: var(--danger); }
+    .live-timer.green { color: var(--accent); }
+
+    .sbadge {
+      text-align: center; font-size: 0.76rem; letter-spacing: 3px;
+      padding: 8px 12px; border-radius: 6px; margin-top: 8px;
+    }
+    .b-run { color:var(--warn);   background:rgba(255,170,0,0.05);  border:1px solid rgba(255,170,0,0.18); }
+    .b-chk { color:#AAAAFF;       background:rgba(100,100,255,0.05);border:1px solid rgba(100,100,255,0.18);}
+    .b-suc { color:var(--accent); background:rgba(0,255,100,0.05);  border:1px solid rgba(0,255,100,0.18); }
+    .b-exp { color:var(--danger); background:rgba(255,50,50,0.05);  border:1px solid rgba(255,50,50,0.18); }
+
+    .atmp-info {
+      text-align: center; font-size: 0.66rem;
+      color: #FF8800; letter-spacing: 2px;
+      margin-top: 6px; min-height: 1.1em;
+    }
+
+    /* ─── Reset (double-tap confirm) ─── */
+    #reset-btn {
+      width: 100%; margin-top: 14px; padding: 11px;
+      font-family: inherit; font-size: 0.7rem; letter-spacing: 4px;
+      background: transparent;
+      border: 1px solid var(--mute);
+      color: var(--mute);
+      border-radius: 7px;
+      cursor: pointer; touch-action: manipulation;
+      transition: all 0.14s;
+    }
+    #reset-btn.confirming {
+      border-color: var(--danger); color: var(--danger);
+      letter-spacing: 2px;
+    }
+    #reset-btn:active { opacity: 0.7; }
+  </style>
+</head>
+<body>
+
+<div class="hdr">
+  <div class="hdr-line"></div>
+  <div class="hdr-txt">STAFF CONTROL</div>
+  <div class="hdr-line"></div>
+</div>
+
+<!-- Player selection -->
+<div class="card">
+  <div class="card-lbl">▸ PLAYERS</div>
+  <div class="pgrid">
+    <button class="pbtn" data-p="1" data-t="360">
+      <span class="pc">1人</span><span class="pt">6:00</span>
+    </button>
+    <button class="pbtn" data-p="2" data-t="300">
+      <span class="pc">2人</span><span class="pt">5:00</span>
+    </button>
+    <button class="pbtn" data-p="3" data-t="270">
+      <span class="pc">3人</span><span class="pt">4:30</span>
+    </button>
+    <button class="pbtn" data-p="4" data-t="240">
+      <span class="pc">4人</span><span class="pt">4:00</span>
+    </button>
+    <button class="pbtn" data-p="5" data-t="210">
+      <span class="pc">5人</span><span class="pt">3:30</span>
+    </button>
+    <button class="pbtn" data-p="6" data-t="180">
+      <span class="pc">6人</span><span class="pt">3:00</span>
+    </button>
+  </div>
+</div>
+
+<button id="start-btn" disabled>START</button>
+
+<!-- Live status panel -->
+<div class="card" id="status-card">
+  <div class="card-lbl">▸ LIVE STATUS</div>
+  <div class="live-timer" id="live-timer">--:--</div>
+  <div class="sbadge"    id="sbadge"></div>
+  <div class="atmp-info" id="atmp-info"></div>
+  <button id="reset-btn">[ RESET ]</button>
+</div>
+
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
+
+<script>
+// ╔════════════════════════════════════════════════════╗
+// ★ Firebase Config（bomb.html と同じものを貼り付け）  ★
+// ╚════════════════════════════════════════════════════╝
+const firebaseConfig = {
+    apiKey: "AIzaSyDlvOh0Am1vQLC4RyrOpkmseu_nx4vF0kE",
+    authDomain: "countdown-a04be.firebaseapp.com",
+    databaseURL: "https://countdown-a04be-default-rtdb.firebaseio.com",
+    projectId: "countdown-a04be",
+    storageBucket: "countdown-a04be.firebasestorage.app",
+    messagingSenderId: "724179810638",
+    appId: "1:724179810638:web:b09efd4bd277f03f45861f",
+    measurementId: "G-T2GPLE7CQG"
+  };
+
+// Config 未設定チェック
+if (firebaseConfig.apiKey === "YOUR_API_KEY") {
+  document.getElementById('start-btn').disabled = true;
+  document.getElementById('start-btn').textContent = "Firebase 未設定";
+} else {
+  firebase.initializeApp(firebaseConfig);
+  const gameRef = firebase.database().ref('game');
+  initStaff(gameRef);
+}
+
+function initStaff(gameRef) {
+
+  let selPlayers = null, selTime = null;
+
+  // ── Player buttons ──
+  document.querySelectorAll('.pbtn').forEach(b => {
+    b.addEventListener('click', () => {
+      document.querySelectorAll('.pbtn').forEach(x => x.classList.remove('sel'));
+      b.classList.add('sel');
+      selPlayers = +b.dataset.p;
+      selTime    = +b.dataset.t;
+      document.getElementById('start-btn').disabled = false;
+    });
+  });
+
+  // ── Start ──
+  document.getElementById('start-btn').addEventListener('click', () => {
+    if (!selTime) return;
+    gameRef.set({
+      state:         'running',
+      players:       selPlayers,
+      timeLimit:     selTime,
+      timeRemaining: selTime,
+      wrongAttempts: 0
+    });
+    document.getElementById('start-btn').disabled = true;
+    document.querySelectorAll('.pbtn').forEach(b => b.style.opacity = '0.38');
+    document.getElementById('status-card').classList.add('show');
+  });
+
+  // ── Reset（2回タップで確定、3秒でキャンセル）──
+  let resetPending = false;
+  let resetTimer   = null;
+  const resetBtn   = document.getElementById('reset-btn');
+
+  resetBtn.addEventListener('click', () => {
+    if (!resetPending) {
+      // 1回目: 確認状態へ
+      resetPending = true;
+      resetBtn.textContent = '[ もう一度押してリセット確定 ]';
+      resetBtn.classList.add('confirming');
+      resetTimer = setTimeout(() => {
+        resetPending = false;
+        resetBtn.textContent = '[ RESET ]';
+        resetBtn.classList.remove('confirming');
+      }, 3000);
+      return;
+    }
+    // 2回目: 実行
+    clearTimeout(resetTimer);
+    resetPending = false;
+    resetBtn.textContent = '[ RESET ]';
+    resetBtn.classList.remove('confirming');
+
+    gameRef.set({ state: 'idle' });
+    document.getElementById('start-btn').disabled = true;
+    document.getElementById('status-card').classList.remove('show');
+    document.querySelectorAll('.pbtn').forEach(b => {
+      b.classList.remove('sel');
+      b.style.opacity = '1';
+    });
+    selPlayers = null; selTime = null;
+  });
+
+  // ── Firebase → status panel ──
+  gameRef.on('value', snap => {
+    const d = snap.val();
+    if (!d || d.state === 'idle') return;
+
+    const timerEl = document.getElementById('live-timer');
+    const badgeEl = document.getElementById('sbadge');
+    const atmpEl  = document.getElementById('atmp-info');
+
+    // 残り時間
+    const s = Math.max(0, Math.floor(d.timeRemaining || 0));
+    timerEl.textContent =
+      String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+
+    // ミス情報
+    atmpEl.textContent = d.wrongAttempts > 0
+      ? `⚠  ミス ${d.wrongAttempts}回目`
+      : '';
+
+    // バッジ + タイマーカラー
+    timerEl.className = 'live-timer';
+    badgeEl.className = 'sbadge';
+
+    switch (d.state) {
+      case 'running':
+        badgeEl.classList.add('b-run');
+        badgeEl.textContent = '▶  ゲーム進行中';
+        if (s <= 30) timerEl.classList.add('red');
+        break;
+      case 'checking':
+        badgeEl.classList.add('b-chk');
+        badgeEl.textContent = '⟳  コード確認中...';
+        break;
+      case 'success':
+        badgeEl.classList.add('b-suc');
+        badgeEl.textContent = '✓  解除成功！';
+        timerEl.classList.add('green');
+        break;
+      case 'explosion':
+        badgeEl.classList.add('b-exp');
+        badgeEl.textContent = '💥  爆発！';
+        timerEl.classList.add('red');
+        break;
+    }
+  });
+
+} // end initStaff
+</script>
+</body>
+</html>
