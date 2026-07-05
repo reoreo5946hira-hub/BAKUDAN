@@ -306,6 +306,8 @@ function initStaff(gameRef) {
 
   let selPlayers = null, selTime = null;
   let currentState = 'idle', prevState = 'idle';
+  let uiLocked = false;   // 進行中UIロックの二重書き込みを防ぐ
+  let lastData = null;    // visibilitychange復帰時の再描画用
 
   // ── 自動リセット（常時ON）──
   const AR_DELAY = 15;             // 成功/爆発から何秒後に待機へ戻すか
@@ -330,13 +332,15 @@ function initStaff(gameRef) {
 
   // ── BGM ──
   // 6分尺のBGMを想定しつつ、実際のファイル長から自動でオフセットを算出する。
-  // 「残り時間 = 0」と「曲の終わり」が揃うよう、開始位置と再生速度を補正する。
+  // 「残り時間 = 0」と「曲の終わり」が揃うよう、開始位置のみを補正する。
+  // iPad Safariでの音切れ対策として、再生速度(playbackRate)は一切変更しない。
+  // 音量フェードのみで演出し、JSタイマーも100ms以上の間隔に抑える。
   // BGM/爆発音は同じフォルダに置いた bgm.mp3 / explosion.mp3 を自動で読み込む。
   const FADE_IN_MS      = 5000; // ゲーム開始時のフェードイン
-  const DUCK_MS          = 280;  // コード確認開始時、音量/速度を落とすのにかける時間
-  const DUCK_RATE        = 0.55; // 確認中まで落とす再生速度
-  const RESUME_MS        = 350;  // 誤答後、音量/速度を元に戻すのにかける時間
+  const DUCK_MS          = 300;  // コード確認開始時、音量を落とすのにかける時間
+  const RESUME_MS        = 400;  // 誤答後、音量を元に戻すのにかける時間
   const SUCCESS_FADE_MS  = 2000; // 解除成功時のフェードアウト
+  const RAMP_STEP_MS     = 100;  // 音量ランプの更新間隔（これより短い間隔にはしない）
 
   const bgmAudio = new Audio();
   const expAudio = new Audio();
@@ -396,7 +400,6 @@ function initStaff(gameRef) {
   // テストボタン（各端末で一度再生しておくと、自動再生ブロックが解除される）
   document.getElementById('bgm-test-play').addEventListener('click', () => {
     if (!bgmAudio.src) return;
-    bgmAudio.playbackRate = 1;
     bgmAudio.currentTime = 0;
     bgmAudio.play().catch(() => {});
   });
@@ -414,70 +417,64 @@ function initStaff(gameRef) {
     if (bgmFadeInterval) { clearInterval(bgmFadeInterval); bgmFadeInterval = null; }
   }
 
-  // 音量と再生速度を同時に目標値まで滑らかに変化させる汎用ランプ
-  function rampTo(targetVol, targetRate, durationMs, onDone) {
+  // 音量だけを目標値まで滑らかに変化させる（playbackRateは一切操作しない）。
+  // 更新間隔は RAMP_STEP_MS（100ms）以上にして、iPad Safariでの負荷を抑える。
+  function rampTo(targetVol, durationMs, onDone) {
     stopFade();
-    const startVol  = bgmAudio.volume;
-    const startRate = bgmAudio.playbackRate;
-    const steps = Math.max(4, Math.round(durationMs / 30));
+    const startVol = bgmAudio.volume;
+    const steps = Math.max(2, Math.round(durationMs / RAMP_STEP_MS));
     let i = 0;
     bgmFadeInterval = setInterval(() => {
       i++;
       const t = Math.min(1, i / steps);
-      bgmAudio.volume       = startVol  + (targetVol  - startVol)  * t;
-      bgmAudio.playbackRate = startRate + (targetRate - startRate) * t;
+      bgmAudio.volume = startVol + (targetVol - startVol) * t;
       if (i >= steps) {
         clearInterval(bgmFadeInterval);
         bgmFadeInterval = null;
         bgmAudio.volume = targetVol;
-        bgmAudio.playbackRate = targetRate;
         if (onDone) onDone();
       }
     }, durationMs / steps);
   }
 
   // 制限時間の残り分だけ、曲の終わりから逆算した位置で再生開始し、
-  // 約5秒かけて音量をフェードイン
+  // 約5秒かけて音量をフェードイン（currentTimeを動かすのはここだけ＝ゲーム開始時の一度きり）
   function startBgmAt(remainingTime) {
     if (!bgmAudio.src) return;
     stopFade();
-    bgmAudio.playbackRate = 1;
     bgmAudio.currentTime = Math.max(0, bgmDuration() - remainingTime);
     bgmAudio.volume = 0;
     bgmAudio.play().catch(() => {
       bgmWarn.textContent = '⚠ 自動再生がブロックされました。BGMのテスト再生を一度押してください';
     });
-    rampTo(currentVolume(), 1, FADE_IN_MS);
+    rampTo(currentVolume(), FADE_IN_MS);
   }
 
-  // コード確認開始：音量と再生速度を落としてから一時停止（不穏な演出）
+  // コード確認開始：音量を落としてから一時停止
   function duckForChecking() {
-    rampTo(0, DUCK_RATE, DUCK_MS, () => bgmAudio.pause());
+    rampTo(0, DUCK_MS, () => bgmAudio.pause());
   }
 
-  // 誤答で running に戻る瞬間：無音の間に「残り時間 = 曲の終わりまでの位置」へ
-  // 巻き戻し、音量と再生速度を滑らかに戻しながら再開する
-  // （タイマーの+10秒とBGMの位置を常に一致させる）
+  // 誤答で running に戻る瞬間：無音・一時停止の間に「残り時間 = 曲の終わりまでの
+  // 位置」へ巻き戻し（＝タイマーの+10秒とBGMの位置を一致させる一度きりの操作）、
+  // 音量だけを滑らかに戻しながら再開する
   function resumeFromChecking(remainingTime) {
     if (!bgmAudio.src) return;
     stopFade();
     bgmAudio.currentTime = Math.max(0, bgmDuration() - remainingTime);
     bgmAudio.volume = 0;
-    bgmAudio.playbackRate = DUCK_RATE;
     bgmAudio.play().catch(() => {});
-    rampTo(currentVolume(), 1, RESUME_MS);
+    rampTo(currentVolume(), RESUME_MS);
   }
 
   function stopBgmImmediate() {
     stopFade();
     bgmAudio.pause();
-    bgmAudio.playbackRate = 1;
     bgmAudio.currentTime = 0;
   }
   function fadeOutOnSuccess() {
-    rampTo(0, bgmAudio.playbackRate, SUCCESS_FADE_MS, () => {
+    rampTo(0, SUCCESS_FADE_MS, () => {
       bgmAudio.pause();
-      bgmAudio.playbackRate = 1;
       bgmAudio.currentTime = 0;
     });
   }
@@ -486,21 +483,13 @@ function initStaff(gameRef) {
     expAudio.currentTime = 0;
     expAudio.play().catch(() => {});
   }
-  // ブラウザ側の時計ズレなど、ごく小さな誤差だけを毎秒吸収する（±10%まで）
-  // ※誤答による+10秒のズレは resumeFromChecking で直接同期済み
-  function syncBgmRate(remainingTime) {
-    if (!bgmAudio.src || bgmAudio.paused) return;
-    const dur = bgmDuration();
-    if (!dur || remainingTime <= 1) { bgmAudio.playbackRate = 1; return; }
-    const remainingBgm = Math.max(0, dur - bgmAudio.currentTime);
-    bgmAudio.playbackRate = Math.min(1.1, Math.max(0.9, remainingBgm / remainingTime));
-  }
 
   // 待機状態へ戻す（手動リセット2回目・自動リセットで共通）
   function performReset() {
     cancelAutoReset();
     stopBgmImmediate();
     bgmActiveForRun = false;
+    uiLocked = false;
     gameRef.set({ state: 'idle' });
     document.getElementById('start-btn').disabled = true;
     document.getElementById('status-card').classList.remove('show');
@@ -563,15 +552,40 @@ function initStaff(gameRef) {
     performReset();
   });
 
+  // 残り時間・ミス表示・タイマー色のみを描画する（DOM書き込みを最小限に）。
+  // 非表示タブでは呼ばれない。タブ復帰時に visibilitychange から呼び直す。
+  function renderVisuals(d) {
+    const timerEl = document.getElementById('live-timer');
+    const s = Math.max(0, Math.floor(d.timeRemaining || 0));
+    timerEl.textContent =
+      String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+    timerEl.className = 'live-timer';
+    if (d.state === 'running'   && s <= 30) timerEl.classList.add('red');
+    if (d.state === 'success')              timerEl.classList.add('green');
+    if (d.state === 'explosion')            timerEl.classList.add('red');
+    document.getElementById('atmp-info').textContent = d.wrongAttempts > 0
+      ? `⚠  ミス ${d.wrongAttempts}回目`
+      : '';
+  }
+  // タブが非表示の間は描画を止めてCPU負荷を抑え、復帰した瞬間に最新状態で描画し直す
+  // （BGMの再生・同期はこれとは独立して常に継続する）
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && lastData && lastData.state !== 'idle') {
+      renderVisuals(lastData);
+    }
+  });
+
   // ── Firebase → status panel ──
   gameRef.on('value', snap => {
     const d = snap.val();
     if (!d || d.state === 'idle') {
       currentState = 'idle'; prevState = 'idle';
+      uiLocked = false;
+      lastData = null;
       cancelAutoReset();
       stopBgmImmediate();
       bgmActiveForRun = false;
-      // 待機状態へ：操作を戻す（どの経路でリセットされても追従）
+      // 待機状態へ：操作を戻す(どの経路でリセットされても追従)
       document.getElementById('status-card').classList.remove('show');
       document.getElementById('start-btn').disabled = (selTime == null);
       document.querySelectorAll('.pbtn').forEach(b => b.style.opacity = '1');
@@ -579,58 +593,52 @@ function initStaff(gameRef) {
     }
 
     currentState = d.state;
+    lastData = d;
 
-    // スタッフ画面のリロード復帰：進行中はステータス表示＋操作ロック
-    document.getElementById('status-card').classList.add('show');
-    document.getElementById('start-btn').disabled = true;
-    document.querySelectorAll('.pbtn').forEach(b => b.style.opacity = '0.38');
+    // 進行中UIロックへの切り替えは最初の1回だけ(毎秒のDOM書き込みを避ける)
+    if (!uiLocked) {
+      document.getElementById('status-card').classList.add('show');
+      document.getElementById('start-btn').disabled = true;
+      document.querySelectorAll('.pbtn').forEach(b => b.style.opacity = '0.38');
+      uiLocked = true;
+    }
 
-    const timerEl = document.getElementById('live-timer');
-    const badgeEl = document.getElementById('sbadge');
-    const atmpEl  = document.getElementById('atmp-info');
+    if (!document.hidden) renderVisuals(d);
 
-    // 残り時間
-    const s = Math.max(0, Math.floor(d.timeRemaining || 0));
-    timerEl.textContent =
-      String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+    // バッジ表示は状態が変わった時だけ更新
+    if (d.state !== prevState) {
+      const badgeEl = document.getElementById('sbadge');
+      badgeEl.className = 'sbadge';
+      switch (d.state) {
+        case 'running':
+          badgeEl.classList.add('b-run');
+          badgeEl.textContent = '▶  ゲーム進行中';
+          break;
+        case 'checking':
+          badgeEl.classList.add('b-chk');
+          badgeEl.textContent = '⟳  コード確認中...';
+          break;
+        case 'success':
+          badgeEl.classList.add('b-suc');
+          badgeEl.textContent = '✓  解除成功！';
+          break;
+        case 'explosion':
+          badgeEl.classList.add('b-exp');
+          badgeEl.textContent = '💥  爆発！';
+          break;
+      }
+    }
 
-    // ミス情報
-    atmpEl.textContent = d.wrongAttempts > 0
-      ? `⚠  ミス ${d.wrongAttempts}回目`
-      : '';
-
-    // バッジ + タイマーカラー
-    timerEl.className = 'live-timer';
-    badgeEl.className = 'sbadge';
-
-    switch (d.state) {
-      case 'running':
-        badgeEl.classList.add('b-run');
-        badgeEl.textContent = '▶  ゲーム進行中';
-        if (s <= 30) timerEl.classList.add('red');
-        if (!bgmActiveForRun) {
-          startBgmAt(d.timeRemaining ?? d.timeLimit);
-          bgmActiveForRun = true;
-        } else if (prevState === 'checking') {
-          resumeFromChecking(d.timeRemaining);
-        }
-        if (bgmActiveForRun && !bgmFadeInterval) syncBgmRate(d.timeRemaining);
-        break;
-      case 'checking':
-        badgeEl.classList.add('b-chk');
-        badgeEl.textContent = '⟳  コード確認中...';
-        if (bgmActiveForRun) duckForChecking();
-        break;
-      case 'success':
-        badgeEl.classList.add('b-suc');
-        badgeEl.textContent = '✓  解除成功！';
-        timerEl.classList.add('green');
-        break;
-      case 'explosion':
-        badgeEl.classList.add('b-exp');
-        badgeEl.textContent = '💥  爆発！';
-        timerEl.classList.add('red');
-        break;
+    // ── BGM制御(画面の表示状態に関わらず常に実行) ──
+    if (d.state === 'running') {
+      if (!bgmActiveForRun) {
+        startBgmAt(d.timeRemaining ?? d.timeLimit);
+        bgmActiveForRun = true;
+      } else if (prevState === 'checking') {
+        resumeFromChecking(d.timeRemaining);
+      }
+    } else if (d.state === 'checking') {
+      if (bgmActiveForRun) duckForChecking();
     }
 
     // 終了（成功/爆発）へ切り替わった瞬間に自動リセットを予約（常時ON）
