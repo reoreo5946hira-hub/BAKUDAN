@@ -106,15 +106,6 @@
     .pbtn:not(.sel):active { background: rgba(255,255,255,0.02); }
 
     /* ─── BGM card ─── */
-    .bgm-file-btn {
-      display: block; width: 100%; text-align: center;
-      padding: 11px 0; margin-bottom: 6px;
-      font-family: inherit; font-size: 0.68rem; letter-spacing: 2px;
-      background: transparent; border: 1px solid var(--mute); color: var(--dim);
-      border-radius: 7px; cursor: pointer; touch-action: manipulation;
-      transition: all 0.14s;
-    }
-    .bgm-file-btn:active { background: rgba(255,255,255,0.03); }
     .bgm-fname {
       font-size: 0.58rem; color: var(--dim); text-align: center;
       margin-bottom: 12px; word-break: break-all; min-height: 1.2em;
@@ -253,13 +244,7 @@
 <div class="card" id="bgm-card">
   <div class="card-lbl">▸ BGM設定</div>
 
-  <label class="bgm-file-btn" for="bgm-file">🎵 BGMファイルを選択</label>
-  <input type="file" id="bgm-file" accept="audio/*" hidden>
-  <div class="bgm-fname" id="bgm-fname">未選択</div>
-
-  <label class="bgm-file-btn" for="exp-file">💥 爆発音ファイルを選択</label>
-  <input type="file" id="exp-file" accept="audio/*" hidden>
-  <div class="bgm-fname" id="exp-fname">未選択</div>
+  <div class="bgm-fname" id="bgm-fname">読み込み中...</div>
 
   <div class="bgm-vol-row">
     <span class="bgm-vol-lbl">音量</span>
@@ -346,6 +331,7 @@ function initStaff(gameRef) {
   // ── BGM ──
   // 6分尺のBGMを想定しつつ、実際のファイル長から自動でオフセットを算出する。
   // 「残り時間 = 0」と「曲の終わり」が揃うよう、開始位置と再生速度を毎秒すこし補正する。
+  // BGM/爆発音は同じフォルダに置いた bgm.mp3 / explosion.mp3 を自動で読み込む。
   const bgmAudio = new Audio();
   const expAudio = new Audio();
   bgmAudio.preload = 'auto';
@@ -353,13 +339,10 @@ function initStaff(gameRef) {
   let bgmActiveForRun = false;
   let bgmFadeInterval = null;
 
-  const bgmFileInput = document.getElementById('bgm-file');
-  const expFileInput = document.getElementById('exp-file');
-  const bgmFname      = document.getElementById('bgm-fname');
-  const expFname       = document.getElementById('exp-fname');
-  const bgmVolSlider   = document.getElementById('bgm-vol');
-  const bgmVolVal      = document.getElementById('bgm-vol-val');
-  const bgmWarn        = document.getElementById('bgm-warn');
+  const bgmFname     = document.getElementById('bgm-fname');
+  const bgmVolSlider  = document.getElementById('bgm-vol');
+  const bgmVolVal     = document.getElementById('bgm-vol-val');
+  const bgmWarn       = document.getElementById('bgm-warn');
 
   function currentVolume() { return bgmVolSlider.value / 100; }
   bgmAudio.volume = currentVolume();
@@ -386,19 +369,18 @@ function initStaff(gameRef) {
     }
   }
 
-  bgmFileInput.addEventListener('change', () => {
-    const f = bgmFileInput.files[0];
-    if (!f) return;
-    bgmAudio.src = URL.createObjectURL(f);
-    bgmFname.textContent = f.name;
-    bgmAudio.addEventListener('loadedmetadata', checkBgmLength, { once: true });
-  });
-  expFileInput.addEventListener('change', () => {
-    const f = expFileInput.files[0];
-    if (!f) return;
-    expAudio.src = URL.createObjectURL(f);
-    expFname.textContent = f.name;
-  });
+  bgmAudio.src = 'bgm.mp3';
+  expAudio.src = 'explosion.mp3';
+  bgmAudio.addEventListener('loadedmetadata', () => {
+    checkBgmLength();
+    bgmFname.textContent = '🎵 BGM 読み込み完了';
+  }, { once: true });
+  bgmAudio.addEventListener('error', () => {
+    bgmFname.textContent = '⚠ bgm.mp3 が見つかりません';
+  }, { once: true });
+  expAudio.addEventListener('error', () => {
+    bgmWarn.textContent = '⚠ explosion.mp3 が見つかりません';
+  }, { once: true });
 
   // テストボタン（各端末で一度再生しておくと、自動再生ブロックが解除される）
   document.getElementById('bgm-test-play').addEventListener('click', () => {
