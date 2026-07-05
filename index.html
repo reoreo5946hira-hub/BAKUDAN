@@ -118,7 +118,7 @@
     .bgm-vol-row input[type="range"] { flex: 1; accent-color: var(--green); }
     .bgm-vol-val { font-size: 0.6rem; color: var(--dim); width: 3.2em; text-align: right; }
 
-    .bgm-test-row { display: flex; gap: 6px; }
+    .bgm-test-row { display: none; gap: 6px; } /* 本番では非表示（?debug=1 で表示） */
     .bgm-test-btn {
       flex: 1; padding: 9px 0;
       font-family: inherit; font-size: 0.58rem; letter-spacing: 1px;
@@ -252,7 +252,7 @@
     <span class="bgm-vol-val" id="bgm-vol-val">70%</span>
   </div>
 
-  <div class="bgm-test-row">
+  <div class="bgm-test-row" id="bgm-test-row">
     <button class="bgm-test-btn" id="bgm-test-play" type="button">▶ BGM</button>
     <button class="bgm-test-btn" id="bgm-test-exp"  type="button">▶ 爆発音</button>
     <button class="bgm-test-btn" id="bgm-test-stop" type="button">■ 停止</button>
@@ -330,8 +330,14 @@ function initStaff(gameRef) {
 
   // ── BGM ──
   // 6分尺のBGMを想定しつつ、実際のファイル長から自動でオフセットを算出する。
-  // 「残り時間 = 0」と「曲の終わり」が揃うよう、開始位置と再生速度を毎秒すこし補正する。
+  // 「残り時間 = 0」と「曲の終わり」が揃うよう、開始位置と再生速度を補正する。
   // BGM/爆発音は同じフォルダに置いた bgm.mp3 / explosion.mp3 を自動で読み込む。
+  const FADE_IN_MS      = 5000; // ゲーム開始時のフェードイン
+  const DUCK_MS          = 280;  // コード確認開始時、音量/速度を落とすのにかける時間
+  const DUCK_RATE        = 0.55; // 確認中まで落とす再生速度
+  const RESUME_MS        = 350;  // 誤答後、音量/速度を元に戻すのにかける時間
+  const SUCCESS_FADE_MS  = 2000; // 解除成功時のフェードアウト
+
   const bgmAudio = new Audio();
   const expAudio = new Audio();
   bgmAudio.preload = 'auto';
@@ -344,13 +350,18 @@ function initStaff(gameRef) {
   const bgmVolVal     = document.getElementById('bgm-vol-val');
   const bgmWarn       = document.getElementById('bgm-warn');
 
+  // テスト用ボタンは誤操作防止のため本番では非表示（?debug=1 で表示）
+  if (new URLSearchParams(location.search).get('debug') === '1') {
+    document.getElementById('bgm-test-row').style.display = 'flex';
+  }
+
   function currentVolume() { return bgmVolSlider.value / 100; }
   bgmAudio.volume = currentVolume();
   expAudio.volume = currentVolume();
 
   bgmVolSlider.addEventListener('input', () => {
     bgmVolVal.textContent = bgmVolSlider.value + '%';
-    bgmAudio.volume = currentVolume();
+    if (!bgmFadeInterval) bgmAudio.volume = currentVolume();
     expAudio.volume = currentVolume();
   });
 
@@ -403,54 +414,80 @@ function initStaff(gameRef) {
     if (bgmFadeInterval) { clearInterval(bgmFadeInterval); bgmFadeInterval = null; }
   }
 
-  // 制限時間の残り分だけ、曲の終わりから逆算した位置で再生開始
+  // 音量と再生速度を同時に目標値まで滑らかに変化させる汎用ランプ
+  function rampTo(targetVol, targetRate, durationMs, onDone) {
+    stopFade();
+    const startVol  = bgmAudio.volume;
+    const startRate = bgmAudio.playbackRate;
+    const steps = Math.max(4, Math.round(durationMs / 30));
+    let i = 0;
+    bgmFadeInterval = setInterval(() => {
+      i++;
+      const t = Math.min(1, i / steps);
+      bgmAudio.volume       = startVol  + (targetVol  - startVol)  * t;
+      bgmAudio.playbackRate = startRate + (targetRate - startRate) * t;
+      if (i >= steps) {
+        clearInterval(bgmFadeInterval);
+        bgmFadeInterval = null;
+        bgmAudio.volume = targetVol;
+        bgmAudio.playbackRate = targetRate;
+        if (onDone) onDone();
+      }
+    }, durationMs / steps);
+  }
+
+  // 制限時間の残り分だけ、曲の終わりから逆算した位置で再生開始し、
+  // 約5秒かけて音量をフェードイン
   function startBgmAt(remainingTime) {
     if (!bgmAudio.src) return;
     stopFade();
     bgmAudio.playbackRate = 1;
-    bgmAudio.volume = currentVolume();
     bgmAudio.currentTime = Math.max(0, bgmDuration() - remainingTime);
+    bgmAudio.volume = 0;
     bgmAudio.play().catch(() => {
       bgmWarn.textContent = '⚠ 自動再生がブロックされました。BGMのテスト再生を一度押してください';
     });
+    rampTo(currentVolume(), 1, FADE_IN_MS);
   }
-  function resumeBgm() {
+
+  // コード確認開始：音量と再生速度を落としてから一時停止（不穏な演出）
+  function duckForChecking() {
+    rampTo(0, DUCK_RATE, DUCK_MS, () => bgmAudio.pause());
+  }
+
+  // 誤答で running に戻る瞬間：無音の間に「残り時間 = 曲の終わりまでの位置」へ
+  // 巻き戻し、音量と再生速度を滑らかに戻しながら再開する
+  // （タイマーの+10秒とBGMの位置を常に一致させる）
+  function resumeFromChecking(remainingTime) {
     if (!bgmAudio.src) return;
     stopFade();
-    bgmAudio.volume = currentVolume();
+    bgmAudio.currentTime = Math.max(0, bgmDuration() - remainingTime);
+    bgmAudio.volume = 0;
+    bgmAudio.playbackRate = DUCK_RATE;
     bgmAudio.play().catch(() => {});
+    rampTo(currentVolume(), 1, RESUME_MS);
   }
-  function pauseBgm() { bgmAudio.pause(); }
+
   function stopBgmImmediate() {
     stopFade();
     bgmAudio.pause();
     bgmAudio.playbackRate = 1;
     bgmAudio.currentTime = 0;
   }
-  function fadeOutBgm(durationMs) {
-    stopFade();
-    const startVol = bgmAudio.volume;
-    const steps = 20;
-    let i = 0;
-    bgmFadeInterval = setInterval(() => {
-      i++;
-      bgmAudio.volume = Math.max(0, startVol * (1 - i / steps));
-      if (i >= steps) {
-        clearInterval(bgmFadeInterval);
-        bgmFadeInterval = null;
-        bgmAudio.pause();
-        bgmAudio.playbackRate = 1;
-        bgmAudio.currentTime = 0;
-        bgmAudio.volume = startVol;
-      }
-    }, durationMs / steps);
+  function fadeOutOnSuccess() {
+    rampTo(0, bgmAudio.playbackRate, SUCCESS_FADE_MS, () => {
+      bgmAudio.pause();
+      bgmAudio.playbackRate = 1;
+      bgmAudio.currentTime = 0;
+    });
   }
   function playExplosion() {
     if (!expAudio.src) return;
     expAudio.currentTime = 0;
     expAudio.play().catch(() => {});
   }
-  // 誤答による+10秒などのズレを、毎秒わずかな再生速度補正で吸収する（±10%まで）
+  // ブラウザ側の時計ズレなど、ごく小さな誤差だけを毎秒吸収する（±10%まで）
+  // ※誤答による+10秒のズレは resumeFromChecking で直接同期済み
   function syncBgmRate(remainingTime) {
     if (!bgmAudio.src || bgmAudio.paused) return;
     const dur = bgmDuration();
@@ -575,14 +612,14 @@ function initStaff(gameRef) {
           startBgmAt(d.timeRemaining ?? d.timeLimit);
           bgmActiveForRun = true;
         } else if (prevState === 'checking') {
-          resumeBgm();
+          resumeFromChecking(d.timeRemaining);
         }
-        if (bgmActiveForRun) syncBgmRate(d.timeRemaining);
+        if (bgmActiveForRun && !bgmFadeInterval) syncBgmRate(d.timeRemaining);
         break;
       case 'checking':
         badgeEl.classList.add('b-chk');
         badgeEl.textContent = '⟳  コード確認中...';
-        if (bgmActiveForRun) pauseBgm();
+        if (bgmActiveForRun) duckForChecking();
         break;
       case 'success':
         badgeEl.classList.add('b-suc');
@@ -602,7 +639,7 @@ function initStaff(gameRef) {
     if (justEnded) {
       startAutoReset();
       if (d.state === 'success') {
-        if (bgmActiveForRun) fadeOutBgm(2000);
+        if (bgmActiveForRun) fadeOutOnSuccess();
       } else if (d.state === 'explosion') {
         stopBgmImmediate();
         playExplosion();
