@@ -105,6 +105,34 @@
     .pbtn.sel .pt { color: rgba(0,204,68,0.4); }
     .pbtn:not(.sel):active { background: rgba(255,255,255,0.02); }
 
+    /* ─── BGM card ─── */
+    .bgm-fname {
+      font-size: 0.58rem; color: var(--dim); text-align: center;
+      margin-bottom: 12px; word-break: break-all; min-height: 1.2em;
+    }
+    .bgm-vol-row {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 14px;
+    }
+    .bgm-vol-lbl { font-size: 0.6rem; color: var(--dim); letter-spacing: 2px; white-space: nowrap; }
+    .bgm-vol-row input[type="range"] { flex: 1; accent-color: var(--green); }
+    .bgm-vol-val { font-size: 0.6rem; color: var(--dim); width: 3.2em; text-align: right; }
+
+    .bgm-test-row { display: flex; gap: 6px; }
+    .bgm-test-btn {
+      flex: 1; padding: 9px 0;
+      font-family: inherit; font-size: 0.58rem; letter-spacing: 1px;
+      background: transparent; border: 1px solid var(--mute); color: var(--dim);
+      border-radius: 6px; cursor: pointer; touch-action: manipulation;
+      transition: all 0.14s;
+    }
+    .bgm-test-btn:active { background: rgba(255,255,255,0.03); color: var(--accent); }
+
+    .bgm-warn {
+      text-align: center; font-size: 0.6rem; color: var(--warn);
+      letter-spacing: 1px; margin-top: 10px; min-height: 1.1em;
+    }
+
     /* ─── Start button ─── */
     #start-btn {
       width: 100%; max-width: 400px; padding: 17px;
@@ -212,6 +240,27 @@
   </div>
 </div>
 
+<!-- BGM settings -->
+<div class="card" id="bgm-card">
+  <div class="card-lbl">▸ BGM設定</div>
+
+  <div class="bgm-fname" id="bgm-fname">読み込み中...</div>
+
+  <div class="bgm-vol-row">
+    <span class="bgm-vol-lbl">音量</span>
+    <input type="range" id="bgm-vol" min="0" max="100" value="70">
+    <span class="bgm-vol-val" id="bgm-vol-val">70%</span>
+  </div>
+
+  <div class="bgm-test-row">
+    <button class="bgm-test-btn" id="bgm-test-play" type="button">▶ BGM</button>
+    <button class="bgm-test-btn" id="bgm-test-exp"  type="button">▶ 爆発音</button>
+    <button class="bgm-test-btn" id="bgm-test-stop" type="button">■ 停止</button>
+  </div>
+
+  <div class="bgm-warn" id="bgm-warn"></div>
+</div>
+
 <button id="start-btn" disabled>START</button>
 
 <!-- Live status panel -->
@@ -279,9 +328,142 @@ function initStaff(gameRef) {
     arTimer = setTimeout(performReset, AR_DELAY * 1000);
   }
 
+  // ── BGM ──
+  // 6分尺のBGMを想定しつつ、実際のファイル長から自動でオフセットを算出する。
+  // 「残り時間 = 0」と「曲の終わり」が揃うよう、開始位置と再生速度を毎秒すこし補正する。
+  // BGM/爆発音は同じフォルダに置いた bgm.mp3 / explosion.mp3 を自動で読み込む。
+  const bgmAudio = new Audio();
+  const expAudio = new Audio();
+  bgmAudio.preload = 'auto';
+  expAudio.preload = 'auto';
+  let bgmActiveForRun = false;
+  let bgmFadeInterval = null;
+
+  const bgmFname     = document.getElementById('bgm-fname');
+  const bgmVolSlider  = document.getElementById('bgm-vol');
+  const bgmVolVal     = document.getElementById('bgm-vol-val');
+  const bgmWarn       = document.getElementById('bgm-warn');
+
+  function currentVolume() { return bgmVolSlider.value / 100; }
+  bgmAudio.volume = currentVolume();
+  expAudio.volume = currentVolume();
+
+  bgmVolSlider.addEventListener('input', () => {
+    bgmVolVal.textContent = bgmVolSlider.value + '%';
+    bgmAudio.volume = currentVolume();
+    expAudio.volume = currentVolume();
+  });
+
+  function bgmDuration() {
+    return isFinite(bgmAudio.duration) ? bgmAudio.duration : 0;
+  }
+  function checkBgmLength() {
+    const maxTime = 360; // 1人プレイ（6:00）が最長
+    const dur = bgmDuration();
+    if (dur && dur < maxTime) {
+      const m = Math.floor(dur / 60), sec = Math.floor(dur % 60);
+      bgmWarn.textContent =
+        `⚠ BGMが${m}:${String(sec).padStart(2,'0')}と短いため、長い制限時間では最後まで再生できません`;
+    } else {
+      bgmWarn.textContent = '';
+    }
+  }
+
+  bgmAudio.src = 'bgm.mp3';
+  expAudio.src = 'explosion.mp3';
+  bgmAudio.addEventListener('loadedmetadata', () => {
+    checkBgmLength();
+    bgmFname.textContent = '🎵 BGM 読み込み完了';
+  }, { once: true });
+  bgmAudio.addEventListener('error', () => {
+    bgmFname.textContent = '⚠ bgm.mp3 が見つかりません';
+  }, { once: true });
+  expAudio.addEventListener('error', () => {
+    bgmWarn.textContent = '⚠ explosion.mp3 が見つかりません';
+  }, { once: true });
+
+  // テストボタン（各端末で一度再生しておくと、自動再生ブロックが解除される）
+  document.getElementById('bgm-test-play').addEventListener('click', () => {
+    if (!bgmAudio.src) return;
+    bgmAudio.playbackRate = 1;
+    bgmAudio.currentTime = 0;
+    bgmAudio.play().catch(() => {});
+  });
+  document.getElementById('bgm-test-exp').addEventListener('click', () => {
+    if (!expAudio.src) return;
+    expAudio.currentTime = 0;
+    expAudio.play().catch(() => {});
+  });
+  document.getElementById('bgm-test-stop').addEventListener('click', () => {
+    bgmAudio.pause();
+    expAudio.pause();
+  });
+
+  function stopFade() {
+    if (bgmFadeInterval) { clearInterval(bgmFadeInterval); bgmFadeInterval = null; }
+  }
+
+  // 制限時間の残り分だけ、曲の終わりから逆算した位置で再生開始
+  function startBgmAt(remainingTime) {
+    if (!bgmAudio.src) return;
+    stopFade();
+    bgmAudio.playbackRate = 1;
+    bgmAudio.volume = currentVolume();
+    bgmAudio.currentTime = Math.max(0, bgmDuration() - remainingTime);
+    bgmAudio.play().catch(() => {
+      bgmWarn.textContent = '⚠ 自動再生がブロックされました。BGMのテスト再生を一度押してください';
+    });
+  }
+  function resumeBgm() {
+    if (!bgmAudio.src) return;
+    stopFade();
+    bgmAudio.volume = currentVolume();
+    bgmAudio.play().catch(() => {});
+  }
+  function pauseBgm() { bgmAudio.pause(); }
+  function stopBgmImmediate() {
+    stopFade();
+    bgmAudio.pause();
+    bgmAudio.playbackRate = 1;
+    bgmAudio.currentTime = 0;
+  }
+  function fadeOutBgm(durationMs) {
+    stopFade();
+    const startVol = bgmAudio.volume;
+    const steps = 20;
+    let i = 0;
+    bgmFadeInterval = setInterval(() => {
+      i++;
+      bgmAudio.volume = Math.max(0, startVol * (1 - i / steps));
+      if (i >= steps) {
+        clearInterval(bgmFadeInterval);
+        bgmFadeInterval = null;
+        bgmAudio.pause();
+        bgmAudio.playbackRate = 1;
+        bgmAudio.currentTime = 0;
+        bgmAudio.volume = startVol;
+      }
+    }, durationMs / steps);
+  }
+  function playExplosion() {
+    if (!expAudio.src) return;
+    expAudio.currentTime = 0;
+    expAudio.play().catch(() => {});
+  }
+  // 誤答による+10秒などのズレを、毎秒わずかな再生速度補正で吸収する（±10%まで）
+  function syncBgmRate(remainingTime) {
+    if (!bgmAudio.src || bgmAudio.paused) return;
+    const dur = bgmDuration();
+    if (!dur || remainingTime <= 1) { bgmAudio.playbackRate = 1; return; }
+    const remainingBgm = Math.max(0, dur - bgmAudio.currentTime);
+    bgmAudio.playbackRate = Math.min(1.1, Math.max(0.9, remainingBgm / remainingTime));
+  }
+
   // 待機状態へ戻す（手動リセット2回目・自動リセットで共通）
   function performReset() {
     cancelAutoReset();
+    stopBgmImmediate();
+    bgmActiveForRun = false;
     gameRef.set({ state: 'idle' });
     document.getElementById('start-btn').disabled = true;
     document.getElementById('status-card').classList.remove('show');
@@ -350,6 +532,8 @@ function initStaff(gameRef) {
     if (!d || d.state === 'idle') {
       currentState = 'idle'; prevState = 'idle';
       cancelAutoReset();
+      stopBgmImmediate();
+      bgmActiveForRun = false;
       // 待機状態へ：操作を戻す（どの経路でリセットされても追従）
       document.getElementById('status-card').classList.remove('show');
       document.getElementById('start-btn').disabled = (selTime == null);
@@ -387,10 +571,18 @@ function initStaff(gameRef) {
         badgeEl.classList.add('b-run');
         badgeEl.textContent = '▶  ゲーム進行中';
         if (s <= 30) timerEl.classList.add('red');
+        if (!bgmActiveForRun) {
+          startBgmAt(d.timeRemaining ?? d.timeLimit);
+          bgmActiveForRun = true;
+        } else if (prevState === 'checking') {
+          resumeBgm();
+        }
+        if (bgmActiveForRun) syncBgmRate(d.timeRemaining);
         break;
       case 'checking':
         badgeEl.classList.add('b-chk');
         badgeEl.textContent = '⟳  コード確認中...';
+        if (bgmActiveForRun) pauseBgm();
         break;
       case 'success':
         badgeEl.classList.add('b-suc');
@@ -407,7 +599,16 @@ function initStaff(gameRef) {
     // 終了（成功/爆発）へ切り替わった瞬間に自動リセットを予約（常時ON）
     const justEnded = (d.state === 'success' || d.state === 'explosion')
                    && prevState !== 'success' && prevState !== 'explosion';
-    if (justEnded) startAutoReset();
+    if (justEnded) {
+      startAutoReset();
+      if (d.state === 'success') {
+        if (bgmActiveForRun) fadeOutBgm(2000);
+      } else if (d.state === 'explosion') {
+        stopBgmImmediate();
+        playExplosion();
+      }
+      bgmActiveForRun = false;
+    }
     if (d.state === 'running' || d.state === 'checking') cancelAutoReset();
 
     prevState = d.state;
