@@ -376,33 +376,53 @@ function initStaff(gameRef) {
 
   // iOS Safari対策：爆発音(expAudio)は一度もplay()されていない状態だと、
   // ゲーム進行中に自動的に呼んでも再生がブロックされる（Androidでは発生しない）。
-  // ユーザー操作の中でミュート再生→即停止する「アンロック」を行い、
-  // 以後その要素だけは自動再生が許可されるようにする。
-  function unlockAudioElement(audio, label) {
-    if (!audio.src) return;
-    const prevVolume = audio.volume;
-    audio.volume = 0;
-    Promise.resolve(audio.play()).then(() => {
-      audio.pause();
-      audio.currentTime = 0;
-      audio.volume = prevVolume;
+  // bgmAudioはSTARTボタン経由の本物の再生で自然にアンロックされるため対象外。
+  // ※以前は bgmAudio にも同じミュート再生→即停止のアンロックを行っていたが、
+  //   複数の操作（初回タップ／ボタン／START）から重複して呼ばれると、
+  //   後から解決した play() の pause() が「本物の再生」を止めてしまい、
+  //   かつ volume の退避値が上書きされて 0 のまま固定される不具合があった。
+  //   （BGM/爆発音が全端末で無音になっていた原因）
+  //   このため expAudio 専用にし、二重実行を確実に防ぐ状態管理にする。
+  let expUnlockState = 'idle'; // 'idle' | 'unlocking' | 'unlocked'
+
+  function unlockExplosionAudio(onResult) {
+    if (!expAudio.src)                 { onResult && onResult(false); return; }
+    if (expUnlockState === 'unlocking') return; // 二重実行防止
+    if (expUnlockState === 'unlocked') { onResult && onResult(true); return; }
+
+    expUnlockState = 'unlocking';
+    const prevVolume = expAudio.volume;
+    expAudio.volume = 0;
+    Promise.resolve(expAudio.play()).then(() => {
+      expAudio.pause();
+      expAudio.currentTime = 0;
+      expAudio.volume = prevVolume;
+      expUnlockState = 'unlocked';
+      console.log('[BGM] expAudio unlock: play() succeeded');
+      onResult && onResult(true);
     }).catch(err => {
-      audio.volume = prevVolume;
-      console.warn(`[BGM] ${label} unlock failed:`, err && err.name || err);
+      expAudio.volume = prevVolume;
+      expUnlockState = 'idle'; // 失敗時は次のタップで再試行できるように戻す
+      console.warn('[BGM] expAudio unlock: play() failed —', err && err.name || err);
+      onResult && onResult(false);
     });
   }
-  function unlockAllAudio() {
-    unlockAudioElement(bgmAudio, 'bgmAudio');
-    unlockAudioElement(expAudio, 'expAudio');
-  }
-  // 画面のどこを触っても自動でアンロックを試みる（保険）
-  document.addEventListener('pointerdown', unlockAllAudio, { once: true, passive: true });
+  // 画面のどこを最初に触っても自動でアンロックを試みる（保険。失敗しても再タップで再試行可）
+  document.addEventListener('pointerdown', () => unlockExplosionAudio(), { passive: true });
+
   // 明示的に「有効化した」と分かるボタン（本番でも常時表示・各端末で最初に1回）
   const unlockBtn = document.getElementById('bgm-unlock-btn');
   unlockBtn.addEventListener('click', () => {
-    unlockAllAudio();
-    unlockBtn.textContent = '🔊 有効になりました';
-    unlockBtn.classList.add('done');
+    unlockBtn.textContent = '🔊 確認中...';
+    unlockExplosionAudio(success => {
+      if (success) {
+        unlockBtn.textContent = '🔊 有効になりました';
+        unlockBtn.classList.add('done');
+      } else {
+        unlockBtn.textContent = '⚠ 有効化できませんでした（再タップ）';
+        unlockBtn.classList.remove('done');
+      }
+    });
   });
 
   function currentVolume() { return bgmVolSlider.value / 100; }
@@ -490,8 +510,10 @@ function initStaff(gameRef) {
     stopFade();
     bgmAudio.currentTime = Math.max(0, bgmDuration() - remainingTime);
     bgmAudio.volume = 0;
-    bgmAudio.play().catch(err => {
-      console.warn('[BGM] bgmAudio play() failed:', err && err.name || err);
+    Promise.resolve(bgmAudio.play()).then(() => {
+      console.log('[BGM] bgmAudio play() succeeded (start)');
+    }).catch(err => {
+      console.warn('[BGM] bgmAudio play() failed (start):', err && err.name || err);
       bgmWarn.textContent = '⚠ 自動再生がブロックされました。「音声を有効化」ボタンを押してください';
     });
     rampTo(currentVolume(), FADE_IN_MS);
@@ -510,7 +532,9 @@ function initStaff(gameRef) {
     stopFade();
     bgmAudio.currentTime = Math.max(0, bgmDuration() - remainingTime);
     bgmAudio.volume = 0;
-    bgmAudio.play().catch(err => console.warn('[BGM] resume play() failed:', err && err.name || err));
+    Promise.resolve(bgmAudio.play()).then(() => {
+      console.log('[BGM] bgmAudio play() succeeded (resume)');
+    }).catch(err => console.warn('[BGM] bgmAudio play() failed (resume):', err && err.name || err));
     rampTo(currentVolume(), RESUME_MS);
   }
 
@@ -528,12 +552,16 @@ function initStaff(gameRef) {
   function playExplosion() {
     if (!expAudio.src) return;
     expAudio.currentTime = 0;
-    expAudio.play().catch(err => {
+    Promise.resolve(expAudio.play()).then(() => {
+      console.log('[BGM] 爆発音 play() succeeded');
+    }).catch(err => {
       console.warn('[BGM] 爆発音 play() failed:', err && err.name || err);
       bgmWarn.textContent = '⚠ 爆発音の再生がブロックされました。事前に「音声を有効化」を押してください';
       // iOS Safariでの一時的な失敗に備えて少し遅らせて再試行
       setTimeout(() => {
-        expAudio.play().catch(err2 =>
+        Promise.resolve(expAudio.play()).then(() => {
+          console.log('[BGM] 爆発音 再試行に成功');
+        }).catch(err2 =>
           console.warn('[BGM] 爆発音 再試行も失敗:', err2 && err2.name || err2));
       }, 150);
     });
@@ -569,7 +597,7 @@ function initStaff(gameRef) {
   // ── Start ──
   document.getElementById('start-btn').addEventListener('click', () => {
     if (!selTime) return;
-    unlockAllAudio(); // 念のためここでも(保険)
+    unlockExplosionAudio(); // 念のためここでも(保険)
     gameRef.set({
       state:         'running',
       players:       selPlayers,
