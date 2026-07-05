@@ -110,6 +110,19 @@
       font-size: 0.58rem; color: var(--dim); text-align: center;
       margin-bottom: 12px; word-break: break-all; min-height: 1.2em;
     }
+    .bgm-unlock-btn {
+      display: block; width: 100%; text-align: center;
+      padding: 11px 0; margin-bottom: 14px;
+      font-family: inherit; font-size: 0.62rem; letter-spacing: 1px;
+      background: transparent; border: 1px solid var(--mute); color: var(--dim);
+      border-radius: 7px; cursor: pointer; touch-action: manipulation;
+      transition: all 0.14s;
+    }
+    .bgm-unlock-btn:active { background: rgba(255,255,255,0.03); }
+    .bgm-unlock-btn.done {
+      border-color: var(--accent); color: var(--accent);
+    }
+
     .bgm-vol-row {
       display: flex; align-items: center; gap: 10px;
       margin-bottom: 14px;
@@ -246,6 +259,8 @@
 
   <div class="bgm-fname" id="bgm-fname">読み込み中...</div>
 
+  <button class="bgm-unlock-btn" id="bgm-unlock-btn" type="button">🔊 この端末の音声を有効化（最初に1回タップ）</button>
+
   <div class="bgm-vol-row">
     <span class="bgm-vol-lbl">音量</span>
     <input type="range" id="bgm-vol" min="0" max="100" value="70">
@@ -359,6 +374,37 @@ function initStaff(gameRef) {
     document.getElementById('bgm-test-row').style.display = 'flex';
   }
 
+  // iOS Safari対策：爆発音(expAudio)は一度もplay()されていない状態だと、
+  // ゲーム進行中に自動的に呼んでも再生がブロックされる（Androidでは発生しない）。
+  // ユーザー操作の中でミュート再生→即停止する「アンロック」を行い、
+  // 以後その要素だけは自動再生が許可されるようにする。
+  function unlockAudioElement(audio, label) {
+    if (!audio.src) return;
+    const prevVolume = audio.volume;
+    audio.volume = 0;
+    Promise.resolve(audio.play()).then(() => {
+      audio.pause();
+      audio.currentTime = 0;
+      audio.volume = prevVolume;
+    }).catch(err => {
+      audio.volume = prevVolume;
+      console.warn(`[BGM] ${label} unlock failed:`, err && err.name || err);
+    });
+  }
+  function unlockAllAudio() {
+    unlockAudioElement(bgmAudio, 'bgmAudio');
+    unlockAudioElement(expAudio, 'expAudio');
+  }
+  // 画面のどこを触っても自動でアンロックを試みる（保険）
+  document.addEventListener('pointerdown', unlockAllAudio, { once: true, passive: true });
+  // 明示的に「有効化した」と分かるボタン（本番でも常時表示・各端末で最初に1回）
+  const unlockBtn = document.getElementById('bgm-unlock-btn');
+  unlockBtn.addEventListener('click', () => {
+    unlockAllAudio();
+    unlockBtn.textContent = '🔊 有効になりました';
+    unlockBtn.classList.add('done');
+  });
+
   function currentVolume() { return bgmVolSlider.value / 100; }
   bgmAudio.volume = currentVolume();
   expAudio.volume = currentVolume();
@@ -401,12 +447,12 @@ function initStaff(gameRef) {
   document.getElementById('bgm-test-play').addEventListener('click', () => {
     if (!bgmAudio.src) return;
     bgmAudio.currentTime = 0;
-    bgmAudio.play().catch(() => {});
+    bgmAudio.play().catch(err => console.warn('[BGM] test bgmAudio play() failed:', err));
   });
   document.getElementById('bgm-test-exp').addEventListener('click', () => {
     if (!expAudio.src) return;
     expAudio.currentTime = 0;
-    expAudio.play().catch(() => {});
+    expAudio.play().catch(err => console.warn('[BGM] test expAudio play() failed:', err));
   });
   document.getElementById('bgm-test-stop').addEventListener('click', () => {
     bgmAudio.pause();
@@ -444,8 +490,9 @@ function initStaff(gameRef) {
     stopFade();
     bgmAudio.currentTime = Math.max(0, bgmDuration() - remainingTime);
     bgmAudio.volume = 0;
-    bgmAudio.play().catch(() => {
-      bgmWarn.textContent = '⚠ 自動再生がブロックされました。BGMのテスト再生を一度押してください';
+    bgmAudio.play().catch(err => {
+      console.warn('[BGM] bgmAudio play() failed:', err && err.name || err);
+      bgmWarn.textContent = '⚠ 自動再生がブロックされました。「音声を有効化」ボタンを押してください';
     });
     rampTo(currentVolume(), FADE_IN_MS);
   }
@@ -463,7 +510,7 @@ function initStaff(gameRef) {
     stopFade();
     bgmAudio.currentTime = Math.max(0, bgmDuration() - remainingTime);
     bgmAudio.volume = 0;
-    bgmAudio.play().catch(() => {});
+    bgmAudio.play().catch(err => console.warn('[BGM] resume play() failed:', err && err.name || err));
     rampTo(currentVolume(), RESUME_MS);
   }
 
@@ -481,7 +528,15 @@ function initStaff(gameRef) {
   function playExplosion() {
     if (!expAudio.src) return;
     expAudio.currentTime = 0;
-    expAudio.play().catch(() => {});
+    expAudio.play().catch(err => {
+      console.warn('[BGM] 爆発音 play() failed:', err && err.name || err);
+      bgmWarn.textContent = '⚠ 爆発音の再生がブロックされました。事前に「音声を有効化」を押してください';
+      // iOS Safariでの一時的な失敗に備えて少し遅らせて再試行
+      setTimeout(() => {
+        expAudio.play().catch(err2 =>
+          console.warn('[BGM] 爆発音 再試行も失敗:', err2 && err2.name || err2));
+      }, 150);
+    });
   }
 
   // 待機状態へ戻す（手動リセット2回目・自動リセットで共通）
@@ -514,6 +569,7 @@ function initStaff(gameRef) {
   // ── Start ──
   document.getElementById('start-btn').addEventListener('click', () => {
     if (!selTime) return;
+    unlockAllAudio(); // 念のためここでも(保険)
     gameRef.set({
       state:         'running',
       players:       selPlayers,
