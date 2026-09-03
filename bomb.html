@@ -207,23 +207,6 @@
     }
     .kbtn.ent:active { background: #003818; border-color: var(--green); }
 
-    /* ─── +10秒 toast ─── */
-    #toast {
-      position: fixed; top: 50%; left: 50%;
-      transform: translate(-50%, -50%);
-      font-family: 'VT323', monospace;
-      font-size: clamp(28px, 7vh, 54px);
-      color: var(--orange);
-      text-shadow: 0 0 16px var(--orange);
-      pointer-events: none; display: none; z-index: 50;
-    }
-    #toast.show { display: block; animation: toastFly 1.6s ease-out forwards; }
-    @keyframes toastFly {
-      0%   { opacity:1; transform:translate(-50%,-50%); }
-      60%  { opacity:1; transform:translate(-50%,-68%); }
-      100% { opacity:0; transform:translate(-50%,-80%); }
-    }
-
     /* ─── Overlays base ─── */
     .ov {
       position: fixed; inset: 0; z-index: 100;
@@ -364,9 +347,6 @@
   </div>
 
 </div>
-
-<!-- +10秒 toast -->
-<div id="toast">＋10秒</div>
 
 <!-- Firebase status indicator -->
 <div id="firebase-status"></div>
@@ -662,43 +642,12 @@ function initGame(gameRef, connRef) {
   });
 
   // ──────────── Wrong attempt ────────────
+  // 誤答は1回で即爆発（＋10秒のペナルティ猶予・再入力は廃止）
   function doWrong() {
     if (gameState === 'idle') return;   // リセット済みなら無視
     wrongAttempts++;
-    if (wrongAttempts >= 2) { triggerExplosion(); return; }
-
-    // 1回目の失敗: 画面フラッシュ + 警告音 + +10秒追加して再開
-    initAudio();
-    sndWrongAlert();
-    
-    // 画面フラッシュ演出
-    const flash = document.getElementById('wrong-flash');
-    flash.classList.add('show');
-    setTimeout(() => flash.classList.remove('show'), 400);
-
-    // ミス表示
-    const wrongInd = document.getElementById('wrong-indicator');
-    wrongInd.textContent = '⚠ WRONG CODE ⚠';
-    wrongInd.classList.add('show');
-    setTimeout(() => wrongInd.classList.remove('show'), 1500);
-
-    inputCode = '';
-    renderCode();
-    isLocked  = false;
-    gameState = 'running';
-    timeRemaining += 10;
-    gameRef.update({ state: 'running', wrongAttempts, timeRemaining: Math.floor(timeRemaining) });
-    showOv(null);
-    startTimer(timeRemaining);
-
-    document.getElementById('warn-wrap').classList.add('show');
-
-    // +10秒トースト
-    const t = document.getElementById('toast');
-    t.classList.remove('show');
-    void t.offsetWidth;
-    t.classList.add('show');
-    setTimeout(() => t.classList.remove('show'), 1700);
+    gameRef.update({ wrongAttempts });
+    triggerExplosion();
   }
 
   // ──────────── Success ────────────
