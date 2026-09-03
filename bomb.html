@@ -278,13 +278,17 @@
     /* explosion */
     #ov-explosion { animation: expFlash 0.22s step-end infinite; text-align: center; }
     @keyframes expFlash { 0%,100%{background:#CC0000} 50%{background:#FF1111} }
+    /* 「爆発!!」を画面いっぱいに表示する。横幅・縦幅の小さい方を基準にサイズを
+       決めるため、iPadの横画面でも文字が画面からはみ出さない */
     .exp-main {
-      font-family: 'VT323', monospace;
-      font-size: clamp(44px, 14vw, 120px);
-      color: #FFF; letter-spacing: 4px;
+      font-family: 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP',
+                   'Yu Gothic', sans-serif;
+      font-weight: 900;
+      font-size: min(33vw, 82vh);
+      line-height: 1; white-space: nowrap; letter-spacing: 0;
+      color: #FFF;
       text-shadow: 0 0 24px #FF8800, 0 0 60px #FF4400;
     }
-    .exp-sub { font-size: clamp(12px, 3vh, 22px); color: #FFCCCC; letter-spacing: 6px; margin-top: 2vh; }
 
     /* ─── Firebase status indicator ─── */
     #firebase-status {
@@ -378,8 +382,7 @@
 </div>
 
 <div class="ov" id="ov-explosion">
-  <div class="exp-main">DETONATED</div>
-  <div class="exp-sub">// GAME OVER //</div>
+  <div class="exp-main">爆発!!</div>
 </div>
 
 <!-- Firebase SDK -->
