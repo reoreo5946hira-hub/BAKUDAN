@@ -29,7 +29,26 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap" rel="stylesheet">
 
+  <!-- 爆発画面の7セグ風フォントを先読み（同一サーバー上の同梱ファイル。
+       爆発の瞬間に読み込み待ちが発生しないようにする） -->
+  <link rel="preload" as="font" type="font/woff2"
+        href="fonts/DSEG14Classic-Bold.woff2" crossorigin>
+
   <style>
+    /* 14セグメント表示フォント DSEG14 Classic（SIL Open Font License 1.1、
+       (c) 2017 keshikan / fonts/DSEG-LICENSE.txt）。
+       端末にインストールされている必要がないよう、リポジトリに同梱した
+       ファイルを同一サーバーから配信する＝実機で別フォントに化けない。
+       7セグでは M・V・W が表現できないため14セグメント版を使用する。 */
+    @font-face {
+      font-family: 'DSEG14 Classic';
+      src: url('fonts/DSEG14Classic-Bold.woff2') format('woff2'),
+           url('fonts/DSEG14Classic-Bold.woff')  format('woff');
+      font-weight: bold;
+      font-style: normal;
+      font-display: block;   /* 読込中に別フォントで一瞬表示されるのを防ぐ */
+    }
+
     /* ─── Tokens ─── */
     :root {
       --red:    #FF2222;
@@ -282,10 +301,10 @@
        横幅だけでなく縦幅も使い切る。横幅・縦幅の小さい方を基準にサイズを決める
        ため、iPadの横画面でも文字が画面からはみ出さない */
     .exp-main {
-      font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
-      font-weight: 900;
-      font-size: min(31vw, 48vh);
-      line-height: 0.82; white-space: nowrap; letter-spacing: 0;
+      font-family: 'DSEG14 Classic', 'Share Tech Mono', monospace;
+      font-weight: bold;
+      font-size: min(29vw, 46vh);
+      line-height: 1; white-space: nowrap; letter-spacing: 0;
       color: #FFF;
       text-shadow: 0 0 24px #FF8800, 0 0 60px #FF4400;
     }
