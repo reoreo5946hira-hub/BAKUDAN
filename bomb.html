@@ -278,14 +278,14 @@
     /* explosion */
     #ov-explosion { animation: expFlash 0.22s step-end infinite; text-align: center; }
     @keyframes expFlash { 0%,100%{background:#CC0000} 50%{background:#FF1111} }
-    /* 「爆発!!」を画面いっぱいに表示する。横幅・縦幅の小さい方を基準にサイズを
-       決めるため、iPadの横画面でも文字が画面からはみ出さない */
+    /* 「GAME OVER」を画面いっぱいに表示する。GAME / OVER の2行積みにすることで
+       横幅だけでなく縦幅も使い切る。横幅・縦幅の小さい方を基準にサイズを決める
+       ため、iPadの横画面でも文字が画面からはみ出さない */
     .exp-main {
-      font-family: 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP',
-                   'Yu Gothic', sans-serif;
+      font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
       font-weight: 900;
-      font-size: min(33vw, 82vh);
-      line-height: 1; white-space: nowrap; letter-spacing: 0;
+      font-size: min(31vw, 48vh);
+      line-height: 0.82; white-space: nowrap; letter-spacing: 0;
       color: #FFF;
       text-shadow: 0 0 24px #FF8800, 0 0 60px #FF4400;
     }
@@ -382,7 +382,7 @@
 </div>
 
 <div class="ov" id="ov-explosion">
-  <div class="exp-main">爆発!!</div>
+  <div class="exp-main">GAME<br>OVER</div>
 </div>
 
 <!-- Firebase SDK -->
