@@ -605,13 +605,13 @@ function initStaff(gameRef) {
   }
 
   // ── 爆発カウントダウン演出（スタッフ画面のみ）──
-  // 爆発確定を0.0秒として、1.2秒間隔で 5→4→3→2→1→爆発!! を表示する。
-  // 「1」の表示（4.8秒）と同時に explosion.mp3 を先頭(0.0秒)から再生し、
-  // その1.2秒後（爆発確定から6.0秒後）に「爆発!!」へ切り替える。
-  // ＝「爆発!!」の表示と音源の1.2秒地点が一致する（音源長は約11.3秒）。
+  // 爆発確定を0.0秒として、1.2秒間隔で 3→2→1→発射!! を表示する。
+  // 「1」の表示（2.4秒）と同時に explosion.mp3 を先頭(0.0秒)から再生し、
+  // その1.2秒後（爆発確定から3.6秒後）に「発射!!」へ切り替える。
+  // ＝「発射!!」の表示と音源の1.2秒地点が一致する（音源長は約11.3秒）。
   const CD_STEP_MS = 1200;
-  const CD_SEQ     = ['5','4','3','2','1'];
-  const CD_HOLD_MS = 2 * CD_STEP_MS; // 「爆発!!」を表示し続ける時間（この後オーバーレイを閉じる）
+  const CD_SEQ     = ['3','2','1'];
+  const CD_HOLD_MS = 2 * CD_STEP_MS; // 「発射!!」を表示し続ける時間（この後オーバーレイを閉じる）
   let cdTimers = [];
   const cdOverlay = document.getElementById('exp-cd');
   const cdNum     = document.getElementById('exp-cd-num');
@@ -635,14 +635,14 @@ function initStaff(gameRef) {
   function startExplosionCountdown() {
     cancelExplosionCountdown();        // 二重起動時も予約を必ず一度切る（爆発音の多重再生防止）
     cdOverlay.classList.add('show');
-    setCdText(CD_SEQ[0], false);       // 0.0秒：「5」
+    setCdText(CD_SEQ[0], false);       // 0.0秒：「3」
     CD_SEQ.slice(1).forEach((t, i) => {
       cdTimers.push(setTimeout(() => setCdText(t, false), (i + 1) * CD_STEP_MS));
     });
-    const fireAt = (CD_SEQ.length - 1) * CD_STEP_MS;  // 4.8秒＝「1」
+    const fireAt = (CD_SEQ.length - 1) * CD_STEP_MS;  // 2.4秒＝「1」
     cdTimers.push(setTimeout(playExplosion, fireAt));  // 爆発音の再生開始
-    cdTimers.push(setTimeout(() => setCdText('爆発!!', true), fireAt + CD_STEP_MS)); // 6.0秒
-    // 「爆発!!」を見せた後はオーバーレイを閉じ、既存のステータス表示
+    cdTimers.push(setTimeout(() => setCdText('発射!!', true), fireAt + CD_STEP_MS)); // 3.6秒
+    // 「発射!!」を見せた後はオーバーレイを閉じ、既存のステータス表示
     // （自動リセットの残り秒数・RESETボタン）を操作できる状態に戻す
     cdTimers.push(setTimeout(() => cdOverlay.classList.remove('show'),
                              fireAt + CD_STEP_MS + CD_HOLD_MS));
@@ -817,7 +817,7 @@ function initStaff(gameRef) {
         if (bgmActiveForRun) fadeOutOnSuccess();
       } else if (d.state === 'explosion') {
         stopBgmImmediate();
-        startExplosionCountdown();  // 爆発音は「1」表示（4.8秒）と同時に再生される
+        startExplosionCountdown();  // 爆発音は「1」表示（2.4秒）と同時に再生される
       }
       bgmActiveForRun = false;
     }
