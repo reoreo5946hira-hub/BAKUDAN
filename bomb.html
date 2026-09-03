@@ -766,7 +766,11 @@ function initGame(gameRef, connRef) {
     stopTimer(); stopAlarm();
     isLocked = true; gameState = 'explosion';
     clearGlow();
-    gameRef.update({ state: 'explosion', timeRemaining: 0 });
+    // explodedAt: 爆発した瞬間のサーバー時刻。複数のスタッフ画面が
+    // それぞれの受信時刻ではなくこの共通の時刻を基準に演出を鳴らすため、
+    // 端末間で爆発音の開始タイミングが揃う（この画面では使用しない）
+    gameRef.update({ state: 'explosion', timeRemaining: 0,
+                     explodedAt: firebase.database.ServerValue.TIMESTAMP });
     startAlarm();
     showOv('explosion');
   }

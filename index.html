@@ -291,9 +291,9 @@
   <button class="bgm-unlock-btn" id="bgm-unlock-btn" type="button">🔊 この端末の音声を有効化（最初に1回タップ）</button>
 
   <div class="bgm-vol-row">
-    <span class="bgm-vol-lbl">音量</span>
-    <input type="range" id="bgm-vol" min="0" max="100" value="70">
-    <span class="bgm-vol-val" id="bgm-vol-val">70%</span>
+    <span class="bgm-vol-lbl">BGM音量</span>
+    <input type="range" id="bgm-vol" min="0" max="100" value="56">
+    <span class="bgm-vol-val" id="bgm-vol-val">56%</span>
   </div>
 
   <div class="bgm-test-row" id="bgm-test-row">
@@ -460,14 +460,18 @@ function initStaff(gameRef) {
     });
   });
 
+  // 爆発音はブラウザで出せる最大音量で固定する（BGMのスライダーとは連動させない）。
+  // explosion.mp3 はピークが 0.0 dBFS（音量の余裕なし）なので、volume は 1.0 が
+  // 歪ませずに出せる上限。これ以上大きくするには機器側の音量を上げる。
+  const EXP_VOL = 1.0;
+
   function currentVolume() { return bgmVolSlider.value / 100; }
   bgmAudio.volume = currentVolume();
-  expAudio.volume = currentVolume();
+  expAudio.volume = EXP_VOL;
 
   bgmVolSlider.addEventListener('input', () => {
     bgmVolVal.textContent = bgmVolSlider.value + '%';
     if (!bgmFadeInterval) bgmAudio.volume = currentVolume();
-    expAudio.volume = currentVolume();
   });
 
   function bgmDuration() {
@@ -611,6 +615,19 @@ function initStaff(gameRef) {
   const CD_SEQ     = ['3','2','1'];
   const CD_HOLD_MS = 2 * CD_STEP_MS; // 「発射!!」を表示し続ける時間（この後オーバーレイを閉じる）
   let cdTimers = [];
+
+  // ── 複数のスタッフ画面で爆発音の開始タイミングを揃えるための時刻同期 ──
+  // Firebaseの配信遅延は端末ごとに違うため、「受信した瞬間」を基準にすると
+  // 端末間で音がズレる。爆発時に爆弾側が書き込む explodedAt（サーバー時刻）を
+  // 基準にして各ステップを予約することで、どの端末でも同じ瞬間に鳴る。
+  // serverTimeOffset は端末の時計とサーバー時計のズレ（Firebaseが提供）。
+  let serverTimeOffset = 0;
+  firebase.database().ref('.info/serverTimeOffset').on('value', snap => {
+    const v = snap.val();
+    if (typeof v === 'number' && isFinite(v)) serverTimeOffset = v;
+  });
+  function serverNow() { return Date.now() + serverTimeOffset; }
+  const CD_MAX_CATCHUP_MS = 3000;   // これ以上遅れて受信した場合は追いつきを打ち切る
   const cdOverlay = document.getElementById('exp-cd');
   const cdNum     = document.getElementById('exp-cd-num');
 
@@ -630,20 +647,34 @@ function initStaff(gameRef) {
     cdNum.classList.add(isFire ? 'fire' : 'tick');
   }
 
-  function startExplosionCountdown() {
+  // explodedAt（爆発した瞬間のサーバー時刻）を基準に各ステップを予約する。
+  // 値が無い場合（古い爆弾画面など）は受信時刻を基準にする＝従来と同じ動作。
+  function startExplosionCountdown(explodedAt) {
     cancelExplosionCountdown();        // 二重起動時も予約を必ず一度切る（爆発音の多重再生防止）
     cdOverlay.classList.add('show');
-    setCdText(CD_SEQ[0], false);       // 0.0秒：「3」
-    CD_SEQ.slice(1).forEach((t, i) => {
-      cdTimers.push(setTimeout(() => setCdText(t, false), (i + 1) * CD_STEP_MS));
-    });
+
+    // 爆発からの経過時間。受信が遅れた端末はこの分だけ前倒しで予約するので、
+    // 結果としてどの端末でも同じ瞬間に「1」＋爆発音が来る
+    let elapsed = 0;
+    if (typeof explodedAt === 'number' && isFinite(explodedAt)) {
+      const e = serverNow() - explodedAt;
+      if (e > 0) elapsed = Math.min(e, CD_MAX_CATCHUP_MS);
+    }
+
+    // 予定時刻を既に過ぎているステップは即実行（遅れて受信しても表示が追いつく）
+    const at = (offsetMs, fn) => {
+      const delay = offsetMs - elapsed;
+      if (delay <= 0) fn();
+      else cdTimers.push(setTimeout(fn, delay));
+    };
+
     const fireAt = (CD_SEQ.length - 1) * CD_STEP_MS;  // 2.4秒＝「1」
-    cdTimers.push(setTimeout(playExplosion, fireAt));  // 爆発音の再生開始
-    cdTimers.push(setTimeout(() => setCdText('発射!!', true), fireAt + CD_STEP_MS)); // 3.6秒
+    CD_SEQ.forEach((t, i) => at(i * CD_STEP_MS, () => setCdText(t, false)));
+    at(fireAt, playExplosion);                                  // 爆発音の再生開始
+    at(fireAt + CD_STEP_MS, () => setCdText('発射!!', true));     // 3.6秒
     // 「発射!!」を見せた後はオーバーレイを閉じ、既存のステータス表示
     // （自動リセットの残り秒数・RESETボタン）を操作できる状態に戻す
-    cdTimers.push(setTimeout(() => cdOverlay.classList.remove('show'),
-                             fireAt + CD_STEP_MS + CD_HOLD_MS));
+    at(fireAt + CD_STEP_MS + CD_HOLD_MS, () => cdOverlay.classList.remove('show'));
   }
 
   // 待機状態へ戻す（手動リセット2回目・自動リセットで共通）
@@ -815,7 +846,8 @@ function initStaff(gameRef) {
         if (bgmActiveForRun) fadeOutOnSuccess();
       } else if (d.state === 'explosion') {
         stopBgmImmediate();
-        startExplosionCountdown();  // 爆発音は「1」表示（2.4秒）と同時に再生される
+        // 爆発音は「1」表示（2.4秒）と同時。explodedAt を渡して端末間で時刻を揃える
+        startExplosionCountdown(d.explodedAt);
       }
       bgmActiveForRun = false;
     }
