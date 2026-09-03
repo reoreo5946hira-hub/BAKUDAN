@@ -29,22 +29,22 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap" rel="stylesheet">
 
-  <!-- 爆発画面の7セグ風フォントを先読み（同一サーバー上の同梱ファイル。
+  <!-- 爆発画面のデジタル表示フォントを先読み（同一サーバー上の同梱ファイル。
        爆発の瞬間に読み込み待ちが発生しないようにする） -->
   <link rel="preload" as="font" type="font/woff2"
-        href="fonts/DSEG14Classic-Bold.woff2" crossorigin>
+        href="fonts/PressStart2P-Regular.woff2" crossorigin>
 
   <style>
-    /* 14セグメント表示フォント DSEG14 Classic（SIL Open Font License 1.1、
-       (c) 2017 keshikan / fonts/DSEG-LICENSE.txt）。
+    /* アーケード筐体風のドット表示フォント Press Start 2P
+       （SIL Open Font License 1.1、(c) 2012 CodeMan38 /
+         fonts/PressStart2P-LICENSE.txt）。
        端末にインストールされている必要がないよう、リポジトリに同梱した
-       ファイルを同一サーバーから配信する＝実機で別フォントに化けない。
-       7セグでは M・V・W が表現できないため14セグメント版を使用する。 */
+       ファイルを同一サーバーから配信する＝実機で別フォントに化けない。 */
     @font-face {
-      font-family: 'DSEG14 Classic';
-      src: url('fonts/DSEG14Classic-Bold.woff2') format('woff2'),
-           url('fonts/DSEG14Classic-Bold.woff')  format('woff');
-      font-weight: bold;
+      font-family: 'Press Start 2P';
+      src: url('fonts/PressStart2P-Regular.woff2') format('woff2'),
+           url('fonts/PressStart2P-Regular.woff')  format('woff');
+      font-weight: normal;
       font-style: normal;
       font-display: block;   /* 読込中に別フォントで一瞬表示されるのを防ぐ */
     }
@@ -301,9 +301,9 @@
        横幅だけでなく縦幅も使い切る。横幅・縦幅の小さい方を基準にサイズを決める
        ため、iPadの横画面でも文字が画面からはみ出さない */
     .exp-main {
-      font-family: 'DSEG14 Classic', 'Share Tech Mono', monospace;
-      font-weight: bold;
-      font-size: min(29vw, 46vh);
+      font-family: 'Press Start 2P', 'Share Tech Mono', monospace;
+      font-weight: normal;
+      font-size: min(24vw, 46vh);
       line-height: 1; white-space: nowrap; letter-spacing: 0;
       color: #FFF;
       text-shadow: 0 0 24px #FF8800, 0 0 60px #FF4400;
