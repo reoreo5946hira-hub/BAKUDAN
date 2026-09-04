@@ -526,10 +526,29 @@ function initGame(gameRef, connRef) {
   let gameState     = 'idle';
   let inputCode     = '';
   let wrongAttempts = 0;
-  let timeRemaining = 0;
+  let timeRemaining = 0;     // 残り秒数（絶対時刻から毎回計算した結果を入れる）
   let timerInterval = null;
   let isLocked      = false;
   let checkTimeout = null;   // 「確認中」の判定タイマー（リセット時に取消）
+
+  // ── 絶対時刻ベースのカウントダウン用 ──
+  // startAtMs：ゲーム開始の絶対時刻（サーバー時計・ミリ秒）
+  // frozenAtMs：判定中に時間を止めるための時刻（0なら止めていない）
+  let startAtMs    = 0;
+  let timeLimitSec = 0;
+  let frozenAtMs   = 0;
+  let lastWholeSec = -1;     // 表示・効果音を1秒に1回だけ動かすための記録
+  let lastPushSec  = -1;     // Firebaseへの書き込みを1秒に1回に抑えるための記録
+  const CLOCK_STEP_MS = 50;  // 表示の遅れを50ms以内に抑え、復帰時もすぐ追従させる
+                             // （計算と文字列比較だけなので負荷はごく小さい）
+
+  // サーバー時計との差（Firebaseが算出）。これで端末ごとの時計ズレを補正する
+  let serverTimeOffset = 0;
+  firebase.database().ref('.info/serverTimeOffset').on('value', snap => {
+    const v = snap.val();
+    if (typeof v === 'number' && isFinite(v)) serverTimeOffset = v;
+  });
+  function serverNow() { return Date.now() + serverTimeOffset; }
 
   // 保留中のタイマーを取消（リセット・爆発時の誤発火防止）
   function clearPendingTimers() {
@@ -742,31 +761,68 @@ function initGame(gameRef, connRef) {
     document.getElementById('ambient-glow').classList.remove('warn','danger');
   }
 
-  // ──────────── Timer ────────────
-  function startTimer(secs) {
+  // ──────────── Timer（絶対時刻ベース） ────────────
+  // 【従来の問題】setInterval で毎秒 timeRemaining を1ずつ減らしていたため、
+  //   ・iPadがスリープしてJSが止まるとゲーム時間まで止まっていた
+  //   ・開始時刻が「Firebaseイベントの到着時刻」だったので、通信遅延が
+  //     そのまま端末間のズレ（実測約0.8秒）になっていた
+  // 【現在】「開始の絶対時刻(startAt)」とサーバー時計から毎回計算し直すので、
+  //   JSが止まっても復帰時に正しい残り時間になり、どの端末でも同じ値になる。
+  function remainingSec() {
+    if (!startAtMs || !timeLimitSec) return 0;
+    const now = frozenAtMs || serverNow();
+    return Math.max(0, timeLimitSec - (now - startAtMs) / 1000);
+  }
+
+  function startClock() {
     stopTimer();
-    timeRemaining = secs;
-    renderTimer();
-    timerInterval = setInterval(tick, 1000);
+    lastWholeSec = -1;
+    lastPushSec  = -1;
+    tickClock();
+    timerInterval = setInterval(tickClock, CLOCK_STEP_MS);
   }
   function stopTimer() {
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
   }
-  function tick() {
-    timeRemaining = Math.max(0, timeRemaining - 1);
-    renderTimer();
-    gameRef.update({ timeRemaining: Math.floor(timeRemaining) });
-    updateGlow();
-    if (timeRemaining <= 10 && timeRemaining > 0) {
-      sndBeep();
-      document.getElementById('timer').classList.add('blink');
+  function tickClock() {
+    const rem = remainingSec();
+    timeRemaining = rem;             // 成功画面の残り時間表示など既存処理との互換
+    const whole = Math.ceil(rem);    // 表示は切り上げ（従来と同じ見え方になる）
+
+    if (whole !== lastWholeSec) {
+      lastWholeSec = whole;
+      renderTimer(whole);
+      updateGlow();
+      if (whole <= 10 && whole > 0) {
+        sndBeep();
+        document.getElementById('timer').classList.add('blink');
+      }
     }
-    if (timeRemaining <= 0) triggerExplosion();
+    // 他画面のフォールバック用に timeRemaining も1秒ごとに書き込む（互換維持）
+    if (!frozenAtMs && whole !== lastPushSec) {
+      lastPushSec = whole;
+      gameRef.update({ timeRemaining: whole });
+    }
+    // 判定中（時間停止中）は時間切れにしない＝「残り1秒でENT」仕様を維持
+    if (!frozenAtMs && rem <= 0) triggerExplosion();
   }
-  function renderTimer() {
-    const s = Math.max(0, Math.floor(timeRemaining));
+  function renderTimer(whole) {
+    const s = Math.max(0, whole == null ? Math.ceil(remainingSec()) : whole);
     document.getElementById('timer').textContent =
       String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+  }
+
+  // 画面が復帰した瞬間に即座に残り時間を計算し直す（スリープ復帰対策）
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && timerInterval) tickClock();
+  });
+
+  // 旧データ（startAtが無い）との互換：残り時間から開始の絶対時刻を逆算する
+  function resolveStartAt(d) {
+    if (typeof d.startAt === 'number' && isFinite(d.startAt)) return d.startAt;
+    const limit = d.timeLimit || 0;
+    const rem   = (typeof d.timeRemaining === 'number') ? d.timeRemaining : limit;
+    return serverNow() - (limit - rem) * 1000;
   }
 
   // ──────────── Digit display ────────────
@@ -835,8 +891,10 @@ function initGame(gameRef, connRef) {
   document.getElementById('btn-yes').addEventListener('click', () => {
     initAudio();
     const snap = inputCode; // 判定用にスナップショット保存
-    stopTimer();            // タイマーを止めてから判定（「残り1秒でENT」仕様対応）
-    gameRef.update({ state: 'checking' });
+    // 判定中は時間を止める（「残り1秒でENT」仕様）。止めた絶対時刻を共有して
+    // スタッフ画面でも同じ位置で表示が止まるようにする
+    frozenAtMs = serverNow();
+    gameRef.update({ state: 'checking', checkingAt: frozenAtMs });
     showOv('checking');
 
     checkTimeout = setTimeout(() => {
@@ -892,17 +950,18 @@ function initGame(gameRef, connRef) {
   }
 
   // ──────────── Game lifecycle ────────────
-  function startGame(secs, initWrong) {
+  function startGame(startAt, limitSec, initWrong) {
     gameState = 'running'; isLocked = false;
     sucSoundDone = false;                 // 次の成功で成功音を鳴らせるように戻す
     wrongAttempts = initWrong || 0; inputCode = '';
+    startAtMs = startAt; timeLimitSec = limitSec; frozenAtMs = 0;
     renderCode();
     document.getElementById('timer').classList.remove('blink','green');
     document.getElementById('warn-wrap').classList.toggle('show', wrongAttempts > 0);
     document.getElementById('wrong-indicator').classList.remove('show');
     clearGlow();
     showOv(null);
-    startTimer(secs);
+    startClock();
   }
 
   function resetGame() {
@@ -910,6 +969,7 @@ function initGame(gameRef, connRef) {
     stopTimer(); stopAlarm();
     gameState = 'idle'; isLocked = false; inputCode = ''; wrongAttempts = 0;
     sucSoundDone = false;                 // 次のゲームに備えて戻す
+    startAtMs = 0; timeLimitSec = 0; frozenAtMs = 0;
     renderCode();
     document.getElementById('timer').textContent = '--:--';
     document.getElementById('timer').classList.remove('blink','green');
@@ -930,30 +990,46 @@ function initGame(gameRef, connRef) {
       return;
     }
 
-    // 爆弾iPadは起動 or リロード時のみFirebaseと同期
-    // （ゲーム中は爆弾iPadがマスター）
-    // 【改善】リロード時のリカバリーを強化
-    if (gameState !== 'idle' && gameState !== 'success' && gameState !== 'explosion') return;
-
-    switch (d.state) {
-      case 'running':
-        // timeRemaining を優先（リロード時のリカバリー対応）
-        startGame(d.timeRemaining ?? d.timeLimit, d.wrongAttempts || 0);
-        break;
-      case 'checking':
-        // 「確認中」にリロードした場合のリカバリー：入力をクリアして再開
-        startGame(d.timeRemaining ?? d.timeLimit, d.wrongAttempts || 0);
-        gameRef.update({ state: 'running' });
-        break;
-      case 'success':
+    // 終了状態（成功・爆発）は、こちらが進行中でも必ず追従する。
+    // スタッフ画面側の「予備の時間切れ判定」で終わった場合を取りこぼさないため。
+    if (d.state === 'success') {
+      if (gameState !== 'success') {
+        clearPendingTimers(); stopTimer();
         gameState = 'success'; isLocked = true;
         document.getElementById('timer').classList.add('green');
         showOv('success');
-        break;
-      case 'explosion':
+      }
+      return;
+    }
+    if (d.state === 'explosion') {
+      if (gameState !== 'explosion') {
+        const wasRunning = (gameState === 'running');
+        clearPendingTimers(); stopTimer(); stopAlarm();
         gameState = 'explosion'; isLocked = true;
+        clearGlow();
+        // 進行中のゲームが他端末の判定で終わった場合だけ音を鳴らす
+        // （リロードで過去の爆発状態を読んだだけのときは鳴らさない）
+        if (wasRunning) startAlarm();
         showOv('explosion');
-        break;
+      }
+      return;
+    }
+
+    // running / checking は「まだゲームを保持していないとき」だけ復元する。
+    // 【重要】以前は「進行中なら一切無視」だったため、
+    //   ・スタッフ画面が終わらせた爆発を取りこぼす
+    //   ・終了直後に古い checking スナップショットが遅れて届くと、
+    //     終わったはずのゲームが running として再開してしまう
+    //   という問題があった。開始の絶対時刻で持ち主を判定するように変更。
+    const at = resolveStartAt(d);
+    if (gameState === 'idle') {
+      // 起動・リロード・リセット直後のリカバリー
+      startGame(at, d.timeLimit || 0, d.wrongAttempts || 0);
+      if (d.state === 'checking') gameRef.update({ state: 'running' });
+    } else if (gameState === 'running' && typeof d.startAt === 'number'
+               && isFinite(d.startAt) && Math.abs(d.startAt - startAtMs) > 1000) {
+      // 別のゲームが開始されていた場合だけ基準時刻を取り直す
+      startGame(at, d.timeLimit || 0, d.wrongAttempts || 0);
     }
   });
 

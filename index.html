@@ -269,14 +269,14 @@
 <div class="card">
   <div class="card-lbl">▸ PLAYERS</div>
   <div class="pgrid">
-    <button class="pbtn" data-p="1" data-t="360">
-      <span class="pc">1人</span><span class="pt">6:00</span>
+    <button class="pbtn" data-p="1" data-t="240">
+      <span class="pc">1人</span><span class="pt">4:00</span>
     </button>
-    <button class="pbtn" data-p="2" data-t="300">
-      <span class="pc">2人</span><span class="pt">5:00</span>
+    <button class="pbtn" data-p="2" data-t="240">
+      <span class="pc">2人</span><span class="pt">4:00</span>
     </button>
-    <button class="pbtn" data-p="3" data-t="270">
-      <span class="pc">3人</span><span class="pt">4:30</span>
+    <button class="pbtn" data-p="3" data-t="240">
+      <span class="pc">3人</span><span class="pt">4:00</span>
     </button>
     <button class="pbtn" data-p="4" data-t="240">
       <span class="pc">4人</span><span class="pt">4:00</span>
@@ -769,9 +769,10 @@ function initStaff(gameRef) {
   // 基準にして各ステップを予約することで、どの端末でも同じ瞬間に鳴る。
   // serverTimeOffset は端末の時計とサーバー時計のズレ（Firebaseが提供）。
   let serverTimeOffset = 0;
+  let serverTimeReady  = false;   // 時計合わせが済んだか（STARTの基準に使う）
   firebase.database().ref('.info/serverTimeOffset').on('value', snap => {
     const v = snap.val();
-    if (typeof v === 'number' && isFinite(v)) serverTimeOffset = v;
+    if (typeof v === 'number' && isFinite(v)) { serverTimeOffset = v; serverTimeReady = true; }
   });
   function serverNow() { return Date.now() + serverTimeOffset; }
   const CD_MAX_CATCHUP_MS = 3000;   // これ以上遅れて受信した場合は追いつきを打ち切る
@@ -860,12 +861,21 @@ function initStaff(gameRef) {
   document.getElementById('start-btn').addEventListener('click', () => {
     if (!selTime) return;
     unlockExplosionAudio(); // 念のためここでも(保険)
+    // 【重要】STARTを押したこの瞬間を、サーバー時計に換算してゲーム開始時刻にする。
+    // ServerValue.TIMESTAMP だとサーバーに書き込みが届いた時刻（＝往復遅延の分だけ後）
+    // になってしまうため、押した瞬間を基準にできるこちらを使う。
+    // まだ時計合わせが済んでいない場合だけ ServerValue.TIMESTAMP にフォールバックする。
+    const startAt = serverTimeReady
+      ? serverNow()
+      : firebase.database.ServerValue.TIMESTAMP;
+    backupExplodeFired = false;
     gameRef.set({
       state:         'running',
       players:       selPlayers,
       timeLimit:     selTime,
       timeRemaining: selTime,
-      wrongAttempts: 0
+      wrongAttempts: 0,
+      startAt:       startAt
     });
     document.getElementById('start-btn').disabled = true;
     document.querySelectorAll('.pbtn').forEach(b => b.style.opacity = '0.38');
@@ -898,26 +908,70 @@ function initStaff(gameRef) {
     performReset();
   });
 
-  // 残り時間・ミス表示・タイマー色のみを描画する（DOM書き込みを最小限に）。
-  // 非表示タブでは呼ばれない。タブ復帰時に visibilitychange から呼び直す。
+  // ── 残り時間の計算（爆弾iPadと完全に同じ式・同じ基準時刻を使う） ──
+  // 爆弾iPadが毎秒書き込む timeRemaining を表示に使うと「爆弾→サーバー→スタッフ」
+  // の遅延が上乗せされるため、開始の絶対時刻から自分で計算する。
+  function liveRemaining(d) {
+    if (!d) return 0;
+    // 終了後は確定値をそのまま出す
+    if (d.state === 'success' || d.state === 'explosion') return Math.max(0, d.timeRemaining || 0);
+    const limit = d.timeLimit || 0;
+    // startAt が無い旧データは従来どおり timeRemaining を使う（互換維持）
+    if (typeof d.startAt !== 'number' || !isFinite(d.startAt)) return Math.max(0, d.timeRemaining || 0);
+    // 判定中は爆弾iPadが止めた時刻で固定する
+    const now = (d.state === 'checking' && typeof d.checkingAt === 'number')
+      ? d.checkingAt : serverNow();
+    return Math.max(0, limit - (now - d.startAt) / 1000);
+  }
+
+  // 爆弾iPadがスリープ等で時間切れに気づけなかった場合の予備判定。
+  // 爆弾iPad側に先に判定させるため、0到達から少し待ってから確定させる。
+  const BACKUP_EXPLODE_DELAY_MS = 3000;
+  let backupExplodeFired = false;
+  function maybeBackupExplosion(d) {
+    if (backupExplodeFired) return;
+    if (typeof d.startAt !== 'number' || !isFinite(d.startAt)) return;
+    const overMs = serverNow() - (d.startAt + (d.timeLimit || 0) * 1000);
+    if (overMs < BACKUP_EXPLODE_DELAY_MS) return;
+    backupExplodeFired = true;
+    console.warn('[Timer] 爆弾iPadから時間切れの通知が来ないため、スタッフ画面側で確定させます');
+    gameRef.update({ state: 'explosion', timeRemaining: 0,
+                     explodedAt: firebase.database.ServerValue.TIMESTAMP });
+  }
+
+  // ミス回数など、Firebaseの値が変わったときだけ更新すればよい表示
   function renderVisuals(d) {
-    const timerEl = document.getElementById('live-timer');
-    const s = Math.max(0, Math.floor(d.timeRemaining || 0));
-    timerEl.textContent =
-      String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
-    timerEl.className = 'live-timer';
-    if (d.state === 'running'   && s <= 30) timerEl.classList.add('red');
-    if (d.state === 'success')              timerEl.classList.add('green');
-    if (d.state === 'explosion')            timerEl.classList.add('red');
     document.getElementById('atmp-info').textContent = d.wrongAttempts > 0
       ? `⚠  ミス ${d.wrongAttempts}回目`
       : '';
   }
-  // タブが非表示の間は描画を止めてCPU負荷を抑え、復帰した瞬間に最新状態で描画し直す
+
+  // 残り時間の表示は自前のループで回す（Firebaseの受信間隔に依存させない）。
+  // 画面が復帰した瞬間も、絶対時刻から計算し直すので即座に正しい値になる。
+  function renderLiveTimer() {
+    const d = lastData;
+    if (!d || d.state === 'idle') return;
+    const rem = liveRemaining(d);
+    if (d.state === 'running' && rem <= 0) maybeBackupExplosion(d);
+    if (document.hidden) return;   // 非表示中はDOM書き込みを止めてCPU負荷を抑える
+    const s = Math.max(0, Math.ceil(rem));
+    const timerEl = document.getElementById('live-timer');
+    const txt = String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+    if (timerEl.textContent !== txt) timerEl.textContent = txt;
+    let cls = 'live-timer';
+    if (d.state === 'running'   && s <= 30) cls += ' red';
+    if (d.state === 'success')              cls += ' green';
+    if (d.state === 'explosion')            cls += ' red';
+    if (timerEl.className !== cls) timerEl.className = cls;
+  }
+  setInterval(renderLiveTimer, 50);    // 表示の遅れを50ms以内に抑える
+
+  // タブ復帰時は最新状態で即座に描画し直す
   // （BGMの再生・同期はこれとは独立して常に継続する）
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && lastData && lastData.state !== 'idle') {
       renderVisuals(lastData);
+      renderLiveTimer();
     }
   });
 
@@ -932,6 +986,8 @@ function initStaff(gameRef) {
       cancelExplosionCountdown();
       stopBgmImmediate();
       bgmActiveForRun = false;
+      backupExplodeFired = false;   // 次のゲームに備えて予備の時間切れ判定を戻す
+      document.getElementById('live-timer').textContent = '--:--';
       // 待機状態へ：操作を戻す(どの経路でリセットされても追従)
       document.getElementById('status-card').classList.remove('show');
       document.getElementById('start-btn').disabled = (selTime == null);
@@ -979,10 +1035,12 @@ function initStaff(gameRef) {
     // ── BGM制御(画面の表示状態に関わらず常に実行) ──
     if (d.state === 'running') {
       if (!bgmActiveForRun) {
-        startBgmAt(d.timeRemaining ?? d.timeLimit);
+        // BGMの頭出しも、受信した timeRemaining ではなく絶対時刻から計算した
+        // 残り時間を使う（通信遅延の分だけ曲がズレるのを防ぐ）
+        startBgmAt(liveRemaining(d));
         bgmActiveForRun = true;
       } else if (prevState === 'checking') {
-        resumeFromChecking(d.timeRemaining);
+        resumeFromChecking(liveRemaining(d));
       }
     } else if (d.state === 'checking') {
       if (bgmActiveForRun) duckForChecking();
