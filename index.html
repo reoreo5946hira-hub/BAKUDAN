@@ -269,17 +269,10 @@
 <div class="card">
   <div class="card-lbl">▸ PLAYERS</div>
   <div class="pgrid">
-    <button class="pbtn" data-p="1" data-t="240">
-      <span class="pc">1人</span><span class="pt">4:00</span>
-    </button>
-    <button class="pbtn" data-p="2" data-t="240">
-      <span class="pc">2人</span><span class="pt">4:00</span>
-    </button>
-    <button class="pbtn" data-p="3" data-t="240">
-      <span class="pc">3人</span><span class="pt">4:00</span>
-    </button>
+    <!-- 1〜4人は制限時間が同じ4:00なので、表示上は1つにまとめている。
+         Firebaseへ送る値（players=4 / timeLimit=240）は従来の「4人」と同一 -->
     <button class="pbtn" data-p="4" data-t="240">
-      <span class="pc">4人</span><span class="pt">4:00</span>
+      <span class="pc">〜4人</span><span class="pt">4:00</span>
     </button>
     <button class="pbtn" data-p="5" data-t="210">
       <span class="pc">5人</span><span class="pt">3:30</span>
