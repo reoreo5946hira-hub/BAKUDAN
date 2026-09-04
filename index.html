@@ -123,6 +123,14 @@
       border-color: var(--accent); color: var(--accent);
     }
 
+    /* 爆発音の準備状況（本番前に各端末で確認するための表示） */
+    .exp-status {
+      text-align: center; font-size: 0.58rem; letter-spacing: 1px;
+      color: var(--dim); margin: -8px 0 12px; min-height: 1.1em;
+    }
+    .exp-status.ok { color: var(--accent); }
+    .exp-status.ng { color: var(--danger); }
+
     .bgm-vol-row {
       display: flex; align-items: center; gap: 10px;
       margin-bottom: 14px;
@@ -289,6 +297,7 @@
   <div class="bgm-fname" id="bgm-fname">読み込み中...</div>
 
   <button class="bgm-unlock-btn" id="bgm-unlock-btn" type="button">🔊 この端末の音声を有効化（最初に1回タップ）</button>
+  <div class="exp-status" id="exp-status"></div>
 
   <div class="bgm-vol-row">
     <span class="bgm-vol-lbl">BGM音量</span>
@@ -420,25 +429,41 @@ function initStaff(gameRef) {
   //   このため expAudio 専用にし、二重実行を確実に防ぐ状態管理にする。
   let expUnlockState = 'idle'; // 'idle' | 'unlocking' | 'unlocked'
 
+  // 本番の爆発音を再生している最中は、アンロックや準備運転の後始末（pause）が
+  // 絶対に割り込まないようにするためのフラグ。
+  // ★不具合の原因だった箇所：アンロックの play() は Promise で解決するため、
+  //   解決が遅れて爆発の瞬間に重なると .then() 内の pause() が本物の再生を止め、
+  //   要素が「一時停止のまま」残っていた。この状態でBluetoothスピーカーの
+  //   再生ボタンを押すと、OSが一時停止中のメディアを再開するため
+  //   「後から爆発音が鳴る」という症状になっていた。
+  let expRealPlay = false;
+
   function unlockExplosionAudio(onResult) {
     if (!expAudio.src)                 { onResult && onResult(false); return; }
     if (expUnlockState === 'unlocking') return; // 二重実行防止
     if (expUnlockState === 'unlocked') { onResult && onResult(true); return; }
 
     expUnlockState = 'unlocking';
-    const prevVolume = expAudio.volume;
-    expAudio.volume = 0;
+    expAudio.muted = true;               // volume は本番用に 1.0 のまま保つ
     Promise.resolve(expAudio.play()).then(() => {
+      if (expRealPlay) {                 // 本再生が始まっていたら一切触らない
+        expUnlockState = 'unlocked';
+        onResult && onResult(true);
+        return;
+      }
       expAudio.pause();
-      expAudio.currentTime = 0;
-      expAudio.volume = prevVolume;
+      try { expAudio.currentTime = 0; } catch (e) {}
+      expAudio.muted = false;
       expUnlockState = 'unlocked';
+      startKeepAlive();                  // 経路を維持（Bluetoothのスタンバイ対策）
       console.log('[BGM] expAudio unlock: play() succeeded');
+      setExpStatus('ready');
       onResult && onResult(true);
     }).catch(err => {
-      expAudio.volume = prevVolume;
+      if (!expRealPlay) expAudio.muted = false;
       expUnlockState = 'idle'; // 失敗時は次のタップで再試行できるように戻す
       console.warn('[BGM] expAudio unlock: play() failed —', err && err.name || err);
+      setExpStatus('locked');
       onResult && onResult(false);
     });
   }
@@ -489,8 +514,15 @@ function initStaff(gameRef) {
     }
   }
 
+  // 画面を開いた時点で両方の音声を読み込んでおく（爆発の瞬間に読み込み待ちを起こさない）
   bgmAudio.src = 'bgm.mp3';
   expAudio.src = 'explosion.mp3';
+  setExpStatus('loading');
+  expAudio.load();
+  expAudio.addEventListener('canplaythrough', () => {
+    console.log('[BGM] 爆発音の読み込み完了 readyState=' + expAudio.readyState);
+    if (expUnlockState === 'unlocked') setExpStatus('ready');
+  }, { once: true });
   bgmAudio.addEventListener('loadedmetadata', () => {
     checkBgmLength();
     bgmFname.textContent = '🎵 BGM 読み込み完了';
@@ -580,7 +612,11 @@ function initStaff(gameRef) {
   function stopBgmImmediate() {
     stopFade();
     bgmAudio.pause();
-    bgmAudio.currentTime = 0;
+    // ★currentTime = 0 への巻き戻しはここでは行わない。
+    //   タイムアップ時はBGMが曲の終盤（6分近く）まで再生されており、その位置から
+    //   先頭へシークすると 8MB のファイルを読み直すため、直後の爆発音の再生準備と
+    //   競合していた（タイムアップ時だけ爆発音が鳴らない原因）。
+    //   再生位置は次のゲーム開始時に startBgmAt() が必ず設定し直すので不要。
   }
   function fadeOutOnSuccess() {
     rampTo(0, SUCCESS_FADE_MS, () => {
@@ -588,22 +624,133 @@ function initStaff(gameRef) {
       bgmAudio.currentTime = 0;
     });
   }
+  // ── 爆発音を「確実に鳴らす」ための処理 ──────────────────────────
+  // play() が解決しても実際に再生が始まっているとは限らないため、
+  // 再生位置が進んでいることまで確認し、確認できるまで間隔をあけて再試行する。
+  const EXP_RETRY_MS   = [150, 300, 500, 800, 1200, 1800];  // 失敗時の再試行間隔
+  const EXP_VERIFY_MS  = 140;   // play() 後、実際に進んだか確認するまでの待ち
+  let expPlayTimers = [];
+  let expConfirmed  = false;
+
+  function clearExpPlayTimers() {
+    expPlayTimers.forEach(clearTimeout);
+    expPlayTimers = [];
+  }
+  function explosionIsPlaying() {
+    return !expAudio.paused && !expAudio.ended && expAudio.currentTime > 0;
+  }
+
   function playExplosion() {
     if (!expAudio.src) return;
-    expAudio.currentTime = 0;
+    clearExpPlayTimers();
+    expRealPlay = true;    // 以後、アンロック等の後始末が割り込むのを禁止
+    expConfirmed = false;
+    attemptExplosion(0);
+  }
+
+  function attemptExplosion(i) {
+    if (expConfirmed) return;
+    if (explosionIsPlaying()) {              // 既に鳴っていれば頭出しし直さない
+      expConfirmed = true; setExpStatus('played'); return;
+    }
+    expAudio.muted = false;
+    expAudio.volume = EXP_VOL;
+    try { expAudio.currentTime = 0; } catch (e) {}
+
+    const retry = reason => {
+      console.warn('[BGM] 爆発音が再生されていません（' + reason + '） 試行' + (i + 1));
+      if (i + 1 < EXP_RETRY_MS.length) {
+        expPlayTimers.push(setTimeout(() => attemptExplosion(i + 1), EXP_RETRY_MS[i]));
+      } else {
+        setExpStatus('fail');
+        bgmWarn.textContent = '⚠ 爆発音を再生できませんでした。「音声を有効化」を押してください';
+      }
+    };
+
     Promise.resolve(expAudio.play()).then(() => {
-      console.log('[BGM] 爆発音 play() succeeded');
-    }).catch(err => {
-      console.warn('[BGM] 爆発音 play() failed:', err && err.name || err);
-      bgmWarn.textContent = '⚠ 爆発音の再生がブロックされました。事前に「音声を有効化」を押してください';
-      // iOS Safariでの一時的な失敗に備えて少し遅らせて再試行
-      setTimeout(() => {
-        Promise.resolve(expAudio.play()).then(() => {
-          console.log('[BGM] 爆発音 再試行に成功');
-        }).catch(err2 =>
-          console.warn('[BGM] 爆発音 再試行も失敗:', err2 && err2.name || err2));
-      }, 150);
-    });
+      // play() の解決＝再生開始ではないので、少し後に本当に進んだか確認する
+      expPlayTimers.push(setTimeout(() => {
+        if (explosionIsPlaying()) {
+          expConfirmed = true;
+          setExpStatus('played');
+          console.log('[BGM] 爆発音の再生を確認（試行' + (i + 1) + '）');
+        } else {
+          retry('play()は成功したが再生位置が進まない');
+        }
+      }, EXP_VERIFY_MS));
+    }).catch(err => retry(err && err.name || err));
+  }
+
+  // カウントダウン開始と同時に、無音のまま一瞬だけ再生してオーディオ経路を起こす。
+  // Bluetoothスピーカーは無音が続くとスタンバイに入り、次の音の出だしが
+  // 切れる／鳴らないことがあるため、鳴らす2.4秒前に起こしておく。
+  function primeExplosionAudio() {
+    if (!expAudio.src || expRealPlay) return;
+    if (explosionIsPlaying()) return;   // 既に鳴っている音には絶対に触らない
+    expAudio.muted = true;
+    Promise.resolve(expAudio.play()).then(() => {
+      if (expRealPlay) return;             // 本再生が始まっていたら触らない
+      expAudio.pause();
+      try { expAudio.currentTime = 0; } catch (e) {}
+      expAudio.muted = false;
+    }).catch(() => { if (!expRealPlay) expAudio.muted = false; });
+  }
+
+  // ── Bluetooth対策のキープアライブ ──────────────────────────────
+  // 完全な無音が続くとBluetoothスピーカーが省電力で切断・スタンバイし、
+  // 次の音の頭が欠ける。人には聞こえない極小レベル(-70dB程度)の音を
+  // 鳴らし続けて経路を保つ。?nokeepalive=1 で無効化できる。
+  let keepAliveAudio = null;
+  const keepAliveEnabled =
+    new URLSearchParams(location.search).get('nokeepalive') !== '1';
+
+  function makeQuietWav(sec, rate) {
+    const n = sec * rate, size = 44 + n * 2;
+    const buf = new ArrayBuffer(size), dv = new DataView(buf), u8 = new Uint8Array(buf);
+    const put = (o, s) => { for (let i = 0; i < s.length; i++) u8[o + i] = s.charCodeAt(i); };
+    put(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); put(8, 'WAVE'); put(12, 'fmt ');
+    dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, rate, true); dv.setUint32(28, rate * 2, true);
+    dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+    put(36, 'data'); dv.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, Math.round(Math.sin(2*Math.PI*50*i/rate) * 8), true);
+    let s = ''; for (let i = 0; i < size; i++) s += String.fromCharCode(u8[i]);
+    return 'data:audio/wav;base64,' + btoa(s);
+  }
+
+  function startKeepAlive() {
+    if (!keepAliveEnabled || keepAliveAudio) return;
+    try {
+      keepAliveAudio = new Audio(makeQuietWav(1, 8000));
+      keepAliveAudio.loop = true;
+      keepAliveAudio.volume = 1;   // 音源そのものが極小レベルなので実質無音
+      keepAliveAudio.play().then(() => console.log('[BGM] キープアライブ開始'))
+        .catch(err => console.warn('[BGM] キープアライブ失敗:', err && err.name || err));
+    } catch (e) { keepAliveAudio = null; }
+  }
+
+  // Bluetoothスピーカーの停止ボタン等でブラウザ側が勝手に一時停止されないようにする
+  if ('mediaSession' in navigator) {
+    try {
+      navigator.mediaSession.setActionHandler('pause', () => {});
+      navigator.mediaSession.setActionHandler('play',  () => {});
+    } catch (e) {}
+  }
+
+  // 爆発音の準備状況を画面に表示（本番前に各端末で確認できるように）
+  function setExpStatus(kind) {
+    const el = document.getElementById('exp-status');
+    if (!el) return;
+    const map = {
+      loading: ['⋯ 爆発音を読み込み中', ''],
+      ready:   ['✓ 爆発音の準備完了', 'ok'],
+      locked:  ['⚠ 「音声を有効化」を押してください', 'ng'],
+      played:  ['✓ 爆発音を再生しました', 'ok'],
+      fail:    ['⚠ 爆発音を再生できませんでした', 'ng'],
+    };
+    const [txt, cls] = map[kind] || ['', ''];
+    el.textContent = txt;
+    el.className = 'exp-status ' + cls;
   }
 
   // ── 爆発カウントダウン演出（スタッフ画面のみ）──
@@ -635,6 +782,8 @@ function initStaff(gameRef) {
   function cancelExplosionCountdown() {
     cdTimers.forEach(clearTimeout);
     cdTimers = [];
+    clearExpPlayTimers();     // 再試行の予約も止める
+    expRealPlay = false;      // 次の爆発に備えてフラグを戻す（再生中の音は止めない）
     cdOverlay.classList.remove('show');
     cdNum.classList.remove('tick','fire');
     cdNum.textContent = '';
@@ -669,6 +818,8 @@ function initStaff(gameRef) {
     };
 
     const fireAt = (CD_SEQ.length - 1) * CD_STEP_MS;  // 2.4秒＝「1」
+    // 鳴らす前にオーディオ経路を起こしておく（Bluetoothのスタンバイ対策）
+    if (elapsed < fireAt) primeExplosionAudio();
     CD_SEQ.forEach((t, i) => at(i * CD_STEP_MS, () => setCdText(t, false)));
     at(fireAt, playExplosion);                                  // 爆発音の再生開始
     at(fireAt + CD_STEP_MS, () => setCdText('発射!!', true));     // 3.6秒
