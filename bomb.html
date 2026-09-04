@@ -462,6 +462,51 @@ const firebaseConfig = {
     measurementId: "G-T2GPLE7CQG"
   };
 
+// ╔══════════════════════════════════════════════════════╗
+// ★ Screen Wake Lock（放置しても画面が消灯しないようにする） ★
+// ╚══════════════════════════════════════════════════════╝
+// 文化祭本番は誰も触らずに待つ時間があるため、iPadの自動消灯（数分）で
+// 画面が切れないようにする。ゲームのロジックとは完全に独立しており、
+// 取得に失敗してもゲーム本体の動作には一切影響しない。
+(function () {
+  let wakeLock = null;
+
+  async function requestWakeLock() {
+    if (!('wakeLock' in navigator)) {
+      console.warn('[WakeLock] このブラウザは Screen Wake Lock API に対応していません（iPad Safariは16.4未満だと非対応）');
+      return;
+    }
+    if (wakeLock) return;   // 既に取得済みなら何もしない（二重取得防止）
+    try {
+      wakeLock = await navigator.wakeLock.request('screen');
+      console.log('[WakeLock] 取得しました。画面は自動消灯しません');
+      wakeLock.addEventListener('release', () => {
+        // OSやブラウザ側の都合で自動的に解放されることがある（正常な動作）。
+        // 参照だけ捨てておき、再取得は visibilitychange 側で行う。
+        console.log('[WakeLock] 解放されました:', wakeLock ? wakeLock.released : true);
+        wakeLock = null;
+      });
+    } catch (err) {
+      // バッテリー低下時やユーザーがWake Lockを許可していない場合など。
+      // ここで例外を投げるとゲームが止まってしまうため、必ず握りつぶして続行する。
+      wakeLock = null;
+      console.warn('[WakeLock] 取得に失敗しました（ゲームの動作には影響しません）:', err && err.name, err && err.message);
+    }
+  }
+
+  // タブが裏に回ると解放されるブラウザがあるため、表に戻ったタイミングで
+  // 再取得する（要件どおり）。ページ読み込み直後にも一度取得を試みる。
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') requestWakeLock();
+  });
+  window.addEventListener('pageshow', requestWakeLock);   // バックグラウンドからの復帰の保険
+  requestWakeLock();
+
+  // 開発確認用：コンソールから navigator.__wakeLockStatus() で今の状態を見られるようにする
+  window.__wakeLockStatus = () =>
+    ({ supported: 'wakeLock' in navigator, active: !!wakeLock, released: wakeLock ? wakeLock.released : null });
+})();
+
 // ── Firebase init ──
 if (firebaseConfig.apiKey === "YOUR_API_KEY") {
   // Config がまだ未設定の場合のフォールバック表示
