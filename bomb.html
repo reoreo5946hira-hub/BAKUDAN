@@ -278,20 +278,55 @@
     .chk-txt { font-size: clamp(18px, 5.5vh, 44px); color: #AAAAEE; letter-spacing: 5px; }
     #chk-dots { display: inline-block; width: 3ch; text-align: left; }
 
-    /* success */
-    #ov-success { background: #000; text-align: center; }
-    .suc-main {
-      font-family: 'VT323', monospace;
-      font-size: clamp(34px, 11vw, 96px);
-      color: var(--green); letter-spacing: 3px;
-      text-shadow: 0 0 22px rgba(0,255,136,0.9), 0 0 70px rgba(0,255,136,0.3);
-      animation: sucPulse 1.2s ease-in-out infinite;
+    /* ─── success ───────────────────────────────────────────────
+       蛍光緑の全面表示。爆発画面（赤の点滅＋白文字）と正反対の配色にして、
+       遠くからでも一瞬で「成功した」と分かるようにする。 */
+    #ov-success {
+      text-align: center; overflow: hidden;
+      background: #00FF7A;
+      animation: sucPulseBg 0.9s ease-in-out infinite;
     }
-    .suc-sub  { font-size: clamp(11px, 2.8vh, 22px); color: #009955; letter-spacing: 8px; margin-top: 1.5vh; }
-    .suc-time { font-size: clamp(10px, 2vh, 16px);   color: #006633; letter-spacing: 4px; margin-top: 2.5vh; }
-    @keyframes sucPulse {
-      0%,100% { text-shadow: 0 0 22px rgba(0,255,136,0.9), 0 0 70px rgba(0,255,136,0.3); }
-      50%     { text-shadow: 0 0 30px rgba(0,255,136,1),   0 0 100px rgba(0,255,136,0.5); }
+    @keyframes sucPulseBg {
+      0%,100% { background: #00FF7A; }
+      50%     { background: #86FFC0; }
+    }
+    /* 切り替わった瞬間に中央から白い光が広がる（1回だけ） */
+    #ov-success::before {
+      content: ''; position: absolute; inset: -60%;
+      background: radial-gradient(circle at center,
+                  rgba(255,255,255,0.95) 0%, rgba(255,255,255,0) 55%);
+      animation: sucBurst 1s ease-out forwards;
+      pointer-events: none;
+    }
+    @keyframes sucBurst {
+      0%   { transform: scale(0.15); opacity: 1; }
+      100% { transform: scale(1.7);  opacity: 0; }
+    }
+
+    /* 「解除成功!!」は横幅・縦幅の小さい方を基準にサイズを決めるため、
+       iPadの画面比が変わってもはみ出さない */
+    .suc-main {
+      position: relative;
+      font-family: 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP',
+                   'Yu Gothic', sans-serif;
+      font-weight: 900;
+      font-size: min(19vw, 40vh);
+      line-height: 1.05; white-space: nowrap; letter-spacing: 0;
+      color: #033D1D;
+      text-shadow: 0 0 30px rgba(255,255,255,0.95), 0 0 90px rgba(255,255,255,0.6);
+      animation: sucPop 0.55s cubic-bezier(0.2, 1.5, 0.4, 1) both;
+    }
+    @keyframes sucPop {
+      0%   { transform: scale(0.5);  opacity: 0; }
+      70%  { transform: scale(1.07); opacity: 1; }
+      100% { transform: scale(1);    opacity: 1; }
+    }
+
+    .suc-time {
+      position: relative;
+      font-size: clamp(13px, 2.8vh, 24px);
+      font-weight: 700; color: #033D1D; opacity: 0.8;
+      letter-spacing: 4px; margin-top: 2.4vh;
     }
 
     /* explosion */
@@ -395,8 +430,7 @@
 </div>
 
 <div class="ov" id="ov-success">
-  <div class="suc-main">ACCESS GRANTED</div>
-  <div class="suc-sub">// DEACTIVATED //</div>
+  <div class="suc-main">解除成功!!</div>
   <div class="suc-time" id="suc-time"></div>
 </div>
 
@@ -495,9 +529,46 @@ function initGame(gameRef, connRef) {
       setTimeout(() => tone(220, 0.15, 'square', 0.3), i * 200);
     }
   };
+  // 成功時の「ピコーン♪」。Web Audioで生成するので外部音源は増やさない。
+  // 一瞬で駆け上がる「ピコ」＋澄んだ余韻の「ーン」の2段構成。
+  // 1ゲームにつき1回だけ鳴らす（sucSoundDone は開始/リセットで戻す）。
+  let sucSoundDone = false;
   const sndSuccess = () => {
-    [[523,0],[659,110],[784,220],[1047,330]].forEach(([f,t]) =>
-      setTimeout(() => tone(f, 0.4, 'sine', 0.18), t));
+    if (sucSoundDone) return;
+    sucSoundDone = true;
+    initAudio();
+    if (!audioCtx) return;
+    try {
+      const t0 = audioCtx.currentTime;
+      const out = audioCtx.createGain();
+      out.gain.value = 0.9;
+      out.connect(audioCtx.destination);
+
+      // ① 「ピコ」：一瞬で1オクターブ駆け上がる短い音
+      const blip = audioCtx.createOscillator();
+      const bg   = audioCtx.createGain();
+      blip.type = 'sine';
+      blip.frequency.setValueAtTime(1046, t0);
+      blip.frequency.exponentialRampToValueAtTime(2093, t0 + 0.07);
+      bg.gain.setValueAtTime(0.0001, t0);
+      bg.gain.exponentialRampToValueAtTime(0.32, t0 + 0.012);
+      bg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.22);
+      blip.connect(bg); bg.connect(out);
+      blip.start(t0); blip.stop(t0 + 0.25);
+
+      // ② 「ーン」：澄んだ鐘のような余韻（倍音を重ねて硬い電子音にしない）
+      [[2093, 0.26], [3136, 0.12], [4186, 0.05]].forEach(([freq, vol]) => {
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        o.type = 'sine';
+        o.frequency.value = freq;
+        g.gain.setValueAtTime(0.0001, t0 + 0.05);
+        g.gain.exponentialRampToValueAtTime(vol, t0 + 0.09);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.15);
+        o.connect(g); g.connect(out);
+        o.start(t0 + 0.05); o.stop(t0 + 1.2);
+      });
+    } catch (e) {}
   };
 
   // 爆発時の音：短い電子音の連打ではなく、低く重い持続音（ドローン）を鳴らす。
@@ -778,6 +849,7 @@ function initGame(gameRef, connRef) {
   // ──────────── Game lifecycle ────────────
   function startGame(secs, initWrong) {
     gameState = 'running'; isLocked = false;
+    sucSoundDone = false;                 // 次の成功で成功音を鳴らせるように戻す
     wrongAttempts = initWrong || 0; inputCode = '';
     renderCode();
     document.getElementById('timer').classList.remove('blink','green');
@@ -792,6 +864,7 @@ function initGame(gameRef, connRef) {
     clearPendingTimers();
     stopTimer(); stopAlarm();
     gameState = 'idle'; isLocked = false; inputCode = ''; wrongAttempts = 0;
+    sucSoundDone = false;                 // 次のゲームに備えて戻す
     renderCode();
     document.getElementById('timer').textContent = '--:--';
     document.getElementById('timer').classList.remove('blink','green');
