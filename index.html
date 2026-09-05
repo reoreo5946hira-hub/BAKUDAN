@@ -924,7 +924,12 @@ function initStaff(gameRef) {
   function maybeBackupExplosion(d) {
     if (backupExplodeFired) return;
     if (typeof d.startAt !== 'number' || !isFinite(d.startAt)) return;
-    const overMs = serverNow() - (d.startAt + (d.timeLimit || 0) * 1000);
+    // 時計合わせが済むまでは判定しない。端末の時計が進んでいると
+    // 「もう時間切れ」と誤判定して勝手に爆発させてしまうため。
+    if (!serverTimeReady) return;
+    // 制限時間が読めないデータでは判定しない（0扱いにすると即爆発になる）
+    if (typeof d.timeLimit !== 'number' || !isFinite(d.timeLimit) || d.timeLimit <= 0) return;
+    const overMs = serverNow() - (d.startAt + d.timeLimit * 1000);
     if (overMs < BACKUP_EXPLODE_DELAY_MS) return;
     backupExplodeFired = true;
     console.warn('[Timer] 爆弾iPadから時間切れの通知が来ないため、スタッフ画面側で確定させます');

@@ -272,6 +272,10 @@
     .cfm-btn:active { transform: scale(0.92); }
     #btn-no  { background: #111; border: 1.5px solid #444; color: #888; }
     #btn-yes { background: var(--ent-bg); border: 1.5px solid var(--ent-bd); color: var(--ent-tx); }
+    /* 確認画面が出た直後の一瞬だけ「はい」を無効にする（連打の誤爆防止）。
+       押せないことが見て分かるように薄く表示する。 */
+    #btn-yes:disabled { opacity: 0.3; }
+    #btn-yes:disabled:active { transform: none; }
 
     /* checking */
     #ov-checking { background: #000; }
@@ -530,11 +534,19 @@ function initGame(gameRef, connRef) {
   let timerInterval = null;
   let isLocked      = false;
   let checkTimeout = null;   // 「確認中」の判定タイマー（リセット時に取消）
+  let gameRound    = 0;      // ゲームの通し番号。古い判定が次のゲームに効くのを防ぐ
+  let confirmShownAt = 0;    // 確認画面を出した時刻（誤タップ対策）
+  // 確認画面が出た直後の数百msは「はい」を無効にする。
+  // 4桁目を入力すると 180ms 後に確認画面が自動で開くため、素早く連打していると
+  // 次のタップが出たばかりの「はい」に当たってしまい、意図せず即爆発していた。
+  const CONFIRM_TAP_GUARD_MS = 400;
+  let yesEnableTimer = null; // 「はい」を押せる状態に戻すタイマー
 
   // ── 絶対時刻ベースのカウントダウン用 ──
   // startAtMs：ゲーム開始の絶対時刻（サーバー時計・ミリ秒）
   // frozenAtMs：判定中に時間を止めるための時刻（0なら止めていない）
   let startAtMs    = 0;
+  let startAtRaw   = null;   // Firebase上の生の startAt（同じゲームかの判定に使う）
   let timeLimitSec = 0;
   let frozenAtMs   = 0;
   let lastWholeSec = -1;     // 表示・効果音を1秒に1回だけ動かすための記録
@@ -545,15 +557,19 @@ function initGame(gameRef, connRef) {
 
   // サーバー時計との差（Firebaseが算出）。これで端末ごとの時計ズレを補正する
   let serverTimeOffset = 0;
+  let serverTimeReady  = false;   // Firebaseとの時計合わせが済んだか
   firebase.database().ref('.info/serverTimeOffset').on('value', snap => {
     const v = snap.val();
-    if (typeof v === 'number' && isFinite(v)) serverTimeOffset = v;
+    if (typeof v === 'number' && isFinite(v)) { serverTimeOffset = v; serverTimeReady = true; }
   });
   function serverNow() { return Date.now() + serverTimeOffset; }
 
   // 保留中のタイマーを取消（リセット・爆発時の誤発火防止）
   function clearPendingTimers() {
     if (checkTimeout) { clearTimeout(checkTimeout); checkTimeout = null; }
+    if (yesEnableTimer) { clearTimeout(yesEnableTimer); yesEnableTimer = null; }
+    const yes = document.getElementById('btn-yes');
+    if (yes) yes.disabled = false;
   }
 
   // ──────────── Audio ────────────
@@ -769,8 +785,10 @@ function initGame(gameRef, connRef) {
   //     そのまま端末間のズレ（実測約0.8秒）になっていた
   // 【現在】「開始の絶対時刻(startAt)」とサーバー時計から毎回計算し直すので、
   //   JSが止まっても復帰時に正しい残り時間になり、どの端末でも同じ値になる。
+  // 【重要】計算できないときに 0 を返すと「時間切れ」と誤解されて誤爆するため、
+  // null（＝まだ分からない）を返して呼び出し側で何もしないようにする。
   function remainingSec() {
-    if (!startAtMs || !timeLimitSec) return 0;
+    if (!startAtMs || !timeLimitSec || !isFinite(startAtMs) || !isFinite(timeLimitSec)) return null;
     const now = frozenAtMs || serverNow();
     return Math.max(0, timeLimitSec - (now - startAtMs) / 1000);
   }
@@ -787,6 +805,9 @@ function initGame(gameRef, connRef) {
   }
   function tickClock() {
     const rem = remainingSec();
+    // 残り時間がまだ計算できない（開始時刻や制限時間が届いていない）状態では
+    // 何もしない。ここで 0 として扱うと「時間切れ＝爆発」になってしまう。
+    if (rem === null) return;
     timeRemaining = rem;             // 成功画面の残り時間表示など既存処理との互換
     const whole = Math.ceil(rem);    // 表示は切り上げ（従来と同じ見え方になる）
 
@@ -804,8 +825,11 @@ function initGame(gameRef, connRef) {
       lastPushSec = whole;
       gameRef.update({ timeRemaining: whole });
     }
-    // 判定中（時間停止中）は時間切れにしない＝「残り1秒でENT」仕様を維持
-    if (!frozenAtMs && rem <= 0) triggerExplosion();
+    // 判定中（時間停止中）は時間切れにしない＝「残り1秒でENT」仕様を維持。
+    // さらに、Firebaseとの時計合わせが済むまでは時間切れ判定をしない。
+    // （iPadの時計が進んでいると、時計合わせ前は残り時間が短く出てしまい、
+    //   ズレが大きいと開始直後に誤爆する）
+    if (!frozenAtMs && rem <= 0 && serverTimeReady) triggerExplosion();
 
     // 【保険】判定(1.5秒)が完了しないまま時間が止まり続けるのを防ぐ。
     // ページが凍結されて setTimeout が失われた場合など、これが無いと
@@ -817,6 +841,7 @@ function initGame(gameRef, connRef) {
       console.warn('[Timer] 判定が完了しないまま ' + Math.round(stuckMs/1000) +
                    '秒 停止していたため、ゲームを再開します');
       startAtMs += stuckMs;      // 止まっていた時間はカウントしない
+      startAtRaw = startAtMs;    // 書き戻す値と揃える（新ゲームと誤認させない）
       frozenAtMs = 0;
       inputCode = ''; renderCode();
       isLocked = false;
@@ -840,12 +865,31 @@ function initGame(gameRef, connRef) {
     else if (timerInterval) tickClock();
   });
 
-  // 旧データ（startAtが無い）との互換：残り時間から開始の絶対時刻を逆算する
+  // 開始の絶対時刻(startAt)を決める。
+  //  ・旧データ（startAtが無い）との互換：残り時間から逆算する
+  //  ・この端末の時計が大きくずれている場合も残り時間から逆算する
+  //    （ずれた時計のまま startAt を使うと、残り時間が短く出たり、
+  //      ずれが大きいと開始した瞬間に時間切れ＝誤爆してしまうため）
+  const CLOCK_SKEW_TOLERANCE_SEC = 5;
   function resolveStartAt(d) {
-    if (typeof d.startAt === 'number' && isFinite(d.startAt)) return d.startAt;
     const limit = d.timeLimit || 0;
-    const rem   = (typeof d.timeRemaining === 'number') ? d.timeRemaining : limit;
-    return serverNow() - (limit - rem) * 1000;
+    const rem   = (typeof d.timeRemaining === 'number' && isFinite(d.timeRemaining))
+                  ? d.timeRemaining : limit;
+    const fromRemaining = serverNow() - (limit - rem) * 1000;   // 残り時間から逆算
+
+    if (typeof d.startAt !== 'number' || !isFinite(d.startAt)) return fromRemaining;
+    if (!limit) return d.startAt;
+
+    // 判定中は時間が止まっているので、止めた時刻を基準に突き合わせる
+    const nowRef = (d.state === 'checking' && typeof d.checkingAt === 'number'
+                    && isFinite(d.checkingAt)) ? d.checkingAt : serverNow();
+    const calc = limit - (nowRef - d.startAt) / 1000;   // この端末の時計での残り時間
+    if (Math.abs(calc - rem) > CLOCK_SKEW_TOLERANCE_SEC) {
+      console.warn('[Timer] この端末の時計が ' + Math.round(rem - calc) +
+                   '秒ずれているため、残り時間から開始時刻を計算し直します');
+      return fromRemaining;
+    }
+    return d.startAt;
   }
 
   // ──────────── Digit display ────────────
@@ -897,6 +941,13 @@ function initGame(gameRef, connRef) {
   function doConfirm() {
     if (isLocked || gameState !== 'running' || inputCode.length !== 4) return;
     isLocked = true;
+    confirmShownAt = Date.now();
+    // 出たばかりの「はい」に連打が当たらないよう、最初の一瞬は押せなくする
+    const yes = document.getElementById('btn-yes');
+    yes.disabled = true;
+    if (yesEnableTimer) clearTimeout(yesEnableTimer);
+    yesEnableTimer = setTimeout(() => { yesEnableTimer = null; yes.disabled = false; },
+                                CONFIRM_TAP_GUARD_MS);
     document.getElementById('cfm-code').textContent = inputCode;
     showOv('confirm');
   }
@@ -913,7 +964,12 @@ function initGame(gameRef, connRef) {
   // はい → CHECKING
   document.getElementById('btn-yes').addEventListener('click', () => {
     initAudio();
-    const snap = inputCode; // 判定用にスナップショット保存
+    // 確認画面が出た直後のタップは、狙って押したものではないので無視する
+    if (Date.now() - confirmShownAt < CONFIRM_TAP_GUARD_MS) return;
+    // 進行中でない／既に判定中（連打）なら受け付けない
+    if (gameState !== 'running' || frozenAtMs || checkTimeout) return;
+    const snap  = inputCode;   // 判定用にスナップショット保存
+    const round = gameRound;   // この判定がどのゲームのものかを覚えておく
     // 判定中は時間を止める（「残り1秒でENT」仕様）。止めた絶対時刻を共有して
     // スタッフ画面でも同じ位置で表示が止まるようにする
     frozenAtMs = serverNow();
@@ -924,6 +980,8 @@ function initGame(gameRef, connRef) {
       checkTimeout = null;
       // リセット済み、または他端末が既に終わらせた場合は判定しない
       if (gameState !== 'running') return;
+      // 別のゲームが始まっている場合も判定しない（前のゲームの判定で誤爆させない）
+      if (round !== gameRound) return;
       if (snap === SECRET_CODE) {
         doSuccess();
       } else {
@@ -975,6 +1033,9 @@ function initGame(gameRef, connRef) {
 
   // ──────────── Game lifecycle ────────────
   function startGame(startAt, limitSec, initWrong) {
+    gameRound++;                          // 前のゲームの判定タイマーを無効化する
+    clearPendingTimers();
+    confirmShownAt = 0;
     gameState = 'running'; isLocked = false;
     sucSoundDone = false;                 // 次の成功で成功音を鳴らせるように戻す
     wrongAttempts = initWrong || 0; inputCode = '';
@@ -989,6 +1050,9 @@ function initGame(gameRef, connRef) {
   }
 
   function resetGame() {
+    gameRound++;                          // 前のゲームの判定タイマーを無効化する
+    confirmShownAt = 0;
+    startAtRaw = null;
     clearPendingTimers();
     stopTimer(); stopAlarm();
     gameState = 'idle'; isLocked = false; inputCode = ''; wrongAttempts = 0;
@@ -1049,9 +1113,13 @@ function initGame(gameRef, connRef) {
     // 「今持っているゲームより新しい開始時刻」＝別のゲームが始まった、と判断する。
     // スリープ中にリセット＋STARTされて idle を取りこぼしても、
     // 新しいゲームに追従できる（取りこぼすと画面が固まったままになるため）。
+    // 比較にはFirebaseの生の startAt を使う。時計ずれの補正で開始時刻を
+    // 作り直した場合、補正後の値と比べると毎回「新しいゲーム」に見えてしまい、
+    // ゲームが繰り返し始まり直してしまうため。
     const isNewGame = typeof d.startAt === 'number' && isFinite(d.startAt)
-                      && d.startAt - startAtMs > 1000;
+                      && (startAtRaw === null || d.startAt - startAtRaw > 1000);
     if (gameState === 'idle' || isNewGame) {
+      startAtRaw = (typeof d.startAt === 'number' && isFinite(d.startAt)) ? d.startAt : null;
       startGame(at, d.timeLimit || 0, d.wrongAttempts || 0);
       if (d.state === 'checking') gameRef.update({ state: 'running' });
     }
