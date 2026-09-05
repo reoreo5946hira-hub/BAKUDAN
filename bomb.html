@@ -539,6 +539,7 @@ function initGame(gameRef, connRef) {
   let frozenAtMs   = 0;
   let lastWholeSec = -1;     // 表示・効果音を1秒に1回だけ動かすための記録
   let lastPushSec  = -1;     // Firebaseへの書き込みを1秒に1回に抑えるための記録
+  const CHECK_STUCK_MS = 6000; // 判定がこの時間を超えて終わらなければ異常とみなす
   const CLOCK_STEP_MS = 50;  // 表示の遅れを50ms以内に抑え、復帰時もすぐ追従させる
                              // （計算と文字列比較だけなので負荷はごく小さい）
 
@@ -805,6 +806,23 @@ function initGame(gameRef, connRef) {
     }
     // 判定中（時間停止中）は時間切れにしない＝「残り1秒でENT」仕様を維持
     if (!frozenAtMs && rem <= 0) triggerExplosion();
+
+    // 【保険】判定(1.5秒)が完了しないまま時間が止まり続けるのを防ぐ。
+    // ページが凍結されて setTimeout が失われた場合など、これが無いと
+    // 両画面とも時間が止まったまま復帰できなくなる。
+    // 止まっていた分は開始時刻をずらして返す（プレイヤーが損をしないように）。
+    if (frozenAtMs && gameState === 'running'
+        && serverNow() - frozenAtMs > CHECK_STUCK_MS) {
+      const stuckMs = serverNow() - frozenAtMs;
+      console.warn('[Timer] 判定が完了しないまま ' + Math.round(stuckMs/1000) +
+                   '秒 停止していたため、ゲームを再開します');
+      startAtMs += stuckMs;      // 止まっていた時間はカウントしない
+      frozenAtMs = 0;
+      inputCode = ''; renderCode();
+      isLocked = false;
+      showOv(null);
+      gameRef.update({ state: 'running', startAt: startAtMs, checkingAt: null });
+    }
   }
   function renderTimer(whole) {
     const s = Math.max(0, whole == null ? Math.ceil(remainingSec()) : whole);
@@ -812,9 +830,14 @@ function initGame(gameRef, connRef) {
       String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
   }
 
-  // 画面が復帰した瞬間に即座に残り時間を計算し直す（スリープ復帰対策）
+  // 画面が復帰した瞬間に即座に残り時間を計算し直す（スリープ復帰対策）。
+  // ページが凍結されて setInterval ごと失われている場合もあるため、
+  // ゲーム進行中なら時計を張り直す（張り直しても基準時刻は変わらないので
+  // カウントダウンはズレない）。これが無いと復帰後に時間が止まったままになる。
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && timerInterval) tickClock();
+    if (document.visibilityState !== 'visible') return;
+    if (gameState === 'running' && startAtMs) startClock();
+    else if (timerInterval) tickClock();
   });
 
   // 旧データ（startAtが無い）との互換：残り時間から開始の絶対時刻を逆算する
@@ -899,7 +922,8 @@ function initGame(gameRef, connRef) {
 
     checkTimeout = setTimeout(() => {
       checkTimeout = null;
-      if (gameState === 'idle') return;   // 確認中にスタッフがリセットした場合は判定しない
+      // リセット済み、または他端末が既に終わらせた場合は判定しない
+      if (gameState !== 'running') return;
       if (snap === SECRET_CODE) {
         doSuccess();
       } else {
@@ -1022,15 +1046,17 @@ function initGame(gameRef, connRef) {
     //     終わったはずのゲームが running として再開してしまう
     //   という問題があった。開始の絶対時刻で持ち主を判定するように変更。
     const at = resolveStartAt(d);
-    if (gameState === 'idle') {
-      // 起動・リロード・リセット直後のリカバリー
+    // 「今持っているゲームより新しい開始時刻」＝別のゲームが始まった、と判断する。
+    // スリープ中にリセット＋STARTされて idle を取りこぼしても、
+    // 新しいゲームに追従できる（取りこぼすと画面が固まったままになるため）。
+    const isNewGame = typeof d.startAt === 'number' && isFinite(d.startAt)
+                      && d.startAt - startAtMs > 1000;
+    if (gameState === 'idle' || isNewGame) {
       startGame(at, d.timeLimit || 0, d.wrongAttempts || 0);
       if (d.state === 'checking') gameRef.update({ state: 'running' });
-    } else if (gameState === 'running' && typeof d.startAt === 'number'
-               && isFinite(d.startAt) && Math.abs(d.startAt - startAtMs) > 1000) {
-      // 別のゲームが開始されていた場合だけ基準時刻を取り直す
-      startGame(at, d.timeLimit || 0, d.wrongAttempts || 0);
     }
+    // 同じゲームの running / checking は何もしない
+    // （終了直後に古いスナップショットが届いても再開させない）
   });
 
   // 起動時
